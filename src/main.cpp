@@ -182,9 +182,15 @@ void updateWeather()
 // 画面全体の再描画 (都市切り替え時に実行)
 void drawMainUI()
 {
+  // 画面全消去（都市切替のときはフルクリア）
   tft.fillScreen(ST77XX_BLACK);
+
   // 境界線（時計とコンテンツの間）
   tft.drawFastHLine(0, 30, 128, ST77XX_WHITE); // 上部境界線
+
+  // 都市名を描く前に都市名領域を明示的にクリア（念のため）
+  // (x=0, y=32 から幅128, 高さ30くらいを消す)
+  tft.fillRect(0, 32, 128, 30, ST77XX_BLACK);
 
   // 1. 都市名（中央上部）
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
@@ -198,15 +204,19 @@ void drawMainUI()
   u8g2.setForegroundColor(ST77XX_CYAN);
 
   // 中央寄せのための調整
+  // 気温描画領域も消す
+  tft.fillRect(0, 80, 128, 50, ST77XX_BLACK);
   u8g2.setCursor(15, 105);
   u8g2.print(String(currentTemp, 1));
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
   u8g2.print("°C");
 
   // 3. 天気説明（下部） 天気状態の表示
+  // 下部領域も塗りつぶしておく
+  tft.fillRect(0, 130, 128, 30, ST77XX_BLACK);
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setCursor(10, 140);
-  u8g2.print("天気: " + getWeatherJp(currentWeatherCode));
+  u8g2.print(getWeatherJp(currentWeatherCode));
 }
 
 // 時計のみを部分更新 (毎秒実行)
@@ -309,10 +319,8 @@ void loop()
     updateWeather();
   }
 
-  // 都市の巡回（簡易実装）
+  // 
   displayLayout();
-  delay(5000);
-  cityIndex = (cityIndex + 1) % (sizeof(cities) / sizeof(CityData));
 }
 
 void displayLayout()
