@@ -75,11 +75,13 @@ int cityCount = sizeof(cities) / sizeof(CityData);
 // タイマー管理 (millisを利用した非ブロッキング処理)
 unsigned long lastWeatherUpdate = 0;
 unsigned long lastCitySwitch = 0;
-unsigned long lastTimeUpdate = 0;
+// unsigned long lastTimeUpdate = 0;
+unsigned long lastScreenUpdate = 0;
 
-const unsigned long weatherInterval = 15 * 60 * 1000; // 天気取得: 15分
-const unsigned long citySwitchInterval = 8000;        // 表示切替: 8秒
-const unsigned long timeUpdateInterval = 1000;        // 時計更新: 1秒
+const unsigned long weatherInterval = 15UL * 60UL * 1000UL; // 天気取得: 15分
+const unsigned long citySwitchInterval = 15000UL;            // 表示切替: 15秒
+// const unsigned long timeUpdateInterval = 500;        // 時計更新: 0.5秒
+const unsigned long screenInterval = 1000UL; // 1秒（画面更新）
 
 // --- WMO天気コードを日本語テキストに完全変換 ---
 // Open-Meteoが採用している国際基準のコード表をすべて網羅
@@ -148,10 +150,7 @@ String getWeatherJp(int code)
   }
 }
 
-// --- 関数プロトタイプ ---
-void updateWeather();
-void displayLayout();
-
+// 天気情報取得（Wi‑Fi が接続されていることが前提）
 void updateWeather()
 {
   if (WiFi.status() != WL_CONNECTED)
@@ -170,75 +169,90 @@ void updateWeather()
 
   if (httpCode == HTTP_CODE_OK)
   {
-    JsonDocument doc;
-    deserializeJson(doc, http.getString());
-    currentTemp = doc["current_weather"]["temperature"];
-    currentWeatherCode = doc["current_weather"]["weathercode"];
+    String payload = http.getString();
+    // 適切なサイズに変更。足りない場合は増やす。
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, payload);
+    if (!err)
+    {
+      currentTemp = doc["current_weather"]["temperature"].as<float>();
+      currentWeatherCode = doc["current_weather"]["weathercode"].as<int>();
+      lastWeatherUpdate = millis(); // 成功したら更新時刻を記録
+    }
+    else
+    {
+      Serial.println(F("JSON parse error"));
+    }
+  }
+  else
+  {
+    Serial.printf("HTTP GET failed, code: %d\n", httpCode);
   }
   http.end();
-  lastWeatherUpdate = millis();
+
 }
 
-// 画面全体の再描画 (都市切り替え時に実行)
-void drawMainUI()
+/* 画面全体の再描画（毎秒呼び出す） */
+void drawFullScreen()
 {
-  // 画面全消去（都市切替のときはフルクリア）
-  tft.fillScreen(ST77XX_BLACK);
+  // 時計領域（上部）
+  tft.fillRect(0, 0, 128, 32, ST77XX_BLACK);
+  tft.drawFastHLine(0, 30, 128, ST77XX_WHITE);
 
-  // 境界線（時計とコンテンツの間）
-  tft.drawFastHLine(0, 30, 128, ST77XX_WHITE); // 上部境界線
+  // 都市名領域
+  tft.fillRect(0, 32, 128, 36, ST77XX_BLACK);
 
-  // 都市名を描く前に都市名領域を明示的にクリア（念のため）
-  // (x=0, y=32 から幅128, 高さ30くらいを消す)
-  tft.fillRect(0, 32, 128, 30, ST77XX_BLACK);
+  // 気温領域
+  tft.fillRect(0, 68, 128, 64, ST77XX_BLACK);
 
-  // 1. 都市名（中央上部）
+  // 天気説明領域
+  tft.fillRect(0, 132, 128, 28, ST77XX_BLACK);
+
+  // --- 時計 ---
+  struct tm ti;
+  if (getLocalTime(&ti))
+  {
+    char timeStr[16];
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &ti);
+    tft.setTextColor(ST77XX_GREEN);
+    tft.setTextSize(2);
+    tft.setCursor(15, 6);
+    tft.print(timeStr);
+  }
+  else
+  {
+    tft.setTextColor(ST77XX_GREEN);
+    tft.setTextSize(2);
+    tft.setCursor(8, 6);
+    tft.print("--:--:--");
+  }
+
+  // --- 都市名（日本語） ---
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
   u8g2.setForegroundColor(ST77XX_YELLOW);
-  u8g2.setCursor(10, 55);
-  u8g2.print("【" + String(cities[cityIndex].name) + "】");
+  // u8g2 のカーソル位置はピクセルで指定（ベースラインに注意）
+  u8g2.setCursor(8, 55);
+  String cityLabel = String("【") + String(cities[cityIndex].name) + String("】");
+  // u8g2.print(cityLabel);
+  u8g2.print(cityLabel.c_str()); // ←String → const char* へ変換
 
-  // 2. 気温（画面中央に大きく表示）
-  // u8g2.setFont(u8g2_font_logisoso24_tr);
-  u8g2.setFont(u8g2_font_logisoso32_tr); // さらに大きなフォント
+  // --- 気温 ---
+  u8g2.setFont(u8g2_font_logisoso32_tr);
   u8g2.setForegroundColor(ST77XX_CYAN);
-
-  // 中央寄せのための調整
-  // 気温描画領域も消す
-  tft.fillRect(0, 80, 128, 50, ST77XX_BLACK);
-  u8g2.setCursor(15, 105);
-  u8g2.print(String(currentTemp, 1));
+  u8g2.setCursor(8, 110);
+  // 小数点1桁
+  char tempBuf[16];
+  snprintf(tempBuf, sizeof(tempBuf), "%.1f", currentTemp);
+  u8g2.print(tempBuf);
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
   u8g2.print("°C");
 
-  // 3. 天気説明（下部） 天気状態の表示
-  // 下部領域も塗りつぶしておく
-  tft.fillRect(0, 130, 128, 30, ST77XX_BLACK);
+  // --- 天気説明 ---
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 140);
-  u8g2.print(getWeatherJp(currentWeatherCode));
-}
-
-// 時計のみを部分更新 (毎秒実行)
-void updateClockDisplay()
-{
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo))
-  {
-    return;
-  }
-
-  char timeStr[20];
-  strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
-
-  // 最上部のエリア(128x28)だけをクリア
-  tft.fillRect(0, 0, 128, 28, ST77XX_BLACK);
-
-  // 時計表示（少し小さめのフォントで1行に収める）
-  tft.setTextColor(ST77XX_GREEN);
-  tft.setTextSize(2);
-  tft.setCursor(15, 8);
-  tft.print(timeStr);
+  u8g2.setCursor(8, 150);
+  // u8g2.print("天気: " + getWeatherJp(currentWeatherCode));
+  String weatherStr = getWeatherJp(currentWeatherCode);
+  u8g2.print(weatherStr.c_str()); // ←String → const char* へ変換
 }
 
 void setup()
@@ -282,48 +296,49 @@ void setup()
   configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com");
   Serial.println("time setup done.");
 
-  // 初期データの取得と描画
+  // 最初の天気取得
   updateWeather();
-  drawMainUI();
+  // 初回画面描画
+  drawFullScreen();
+
+  // タイマー初期化
+  lastWeatherUpdate = millis();
+  lastCitySwitch = millis();
+  lastScreenUpdate = millis();
+
+  // drawMainUI();
 }
 
 void loop()
 {
   unsigned long now = millis();
 
-  // 【1】1秒ごとの時刻更新処理
-  if (now - lastTimeUpdate >= timeUpdateInterval)
+  // 1秒毎に画面を再描画（時計＋その他を毎秒更新）
+  if (now - lastScreenUpdate >= screenInterval)
   {
-    updateClockDisplay();
-    lastTimeUpdate = now;
+    drawFullScreen();
+    lastScreenUpdate = now;
   }
 
-  // 【2】指定秒ごとの都市切り替え処理
+  // 都市切替（8秒）
   if (now - lastCitySwitch >= citySwitchInterval)
   {
     cityIndex = (cityIndex + 1) % cityCount;
-    updateWeather(); // 新しい都市の天気を取得
-    drawMainUI();    // 画面全体を書き換え
+    // 新しい都市の天気を即座に取得（非頻繁）
+    updateWeather();
+    // 次の秒の更新で画面が変わる（既に毎秒更新なのでここではdrawしなくてOK）
     lastCitySwitch = now;
   }
-  // 【3】15分ごとの最新天気データ取得 (バックグラウンド更新用)
+
+  // 定期天気更新（15分）
   if (now - lastWeatherUpdate >= weatherInterval)
   {
     updateWeather();
-    // 描画は次の都市切り替えタイミングで行われる
+    // lastWeatherUpdate は updateWeather() 成功時に更新されます
+    // 失敗対策が必要ならここで再試行ロジックを入れてください
   }
 
-  // 15分おきにデータ更新
-  if (millis() - lastWeatherUpdate > weatherInterval)
-  {
-    updateWeather();
-  }
+  // ここで delay は使わない（ノンブロッキング）
 
-  // 
-  displayLayout();
 }
 
-void displayLayout()
-{
-  // ここに時刻のリアルタイム更新などを記述
-}
