@@ -482,8 +482,7 @@ void loop()
     cityIndex = (cityIndex + 1) % cityCount; // 最後の都市の次は先頭に戻る
     Serial.printf("[Loop] Switching city -> %s\n", cities[cityIndex].name);
     updateWeather();   // 新しい都市の天気を即座に取得
-    //drawCity();        // 都市名を即座に更新
-    // drawCity();     // drawWeatherInfo内で一括描画するように変更
+    //drawCity();        // 都市名を即座に更新 drawWeatherInfo内で一括描画するように変更
     drawWeatherInfo(); // 気温・天気・背景を即座に更新
     prevCityIndex = cityIndex;
     lastCitySwitch = now;
