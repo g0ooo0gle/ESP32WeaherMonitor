@@ -54,6 +54,16 @@ U8G2_FOR_ADAFRUIT_GFX u8g2; // 日本語フォント用インスタンス
 #define AREA_WEATHER_Y 122 // 天気説明エリア 開始Y
 #define AREA_WEATHER_H 38  // 天気説明エリア 高さ
 
+// --- カラー定義 (RGB565形式) ---
+// デザイン案に基づく天気グループ別の背景色
+#define COL_BG_CLEAR 0x0952   // 快晴: #1a2a4a
+#define COL_BG_RAIN 0x0926    // 雨: #1a2535
+#define COL_BG_SNOW 0x0E46    // 雪: #1c2535
+#define COL_BG_THUNDER 0x08A5 // 雷: #1a1a2e
+#define COL_BG_FOG 0x0904     // 霧: #1e2020
+#define COL_BG_CLOUDY 0x08E4  // 曇り: #1a1e22
+#define COL_BG_CLOCK 0x00A4   // 時計エリア: #0d1f3c相当
+
 // --- 都市データ構造 (日本の主要都市を地方別に網羅) ---
 struct CityData
 {
@@ -164,6 +174,63 @@ String getWeatherJp(int code)
   }
 }
 
+// --- 天気コードから背景色を判定する関数 ---
+uint16_t getBgColor(int code)
+{
+  if (code == 0)
+    return COL_BG_CLEAR; // 快晴
+  if (code >= 1 && code <= 3)
+    return COL_BG_CLOUDY; // 晴れ・曇り
+  if (code == 45 || code == 48)
+    return COL_BG_FOG; // 霧
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82))
+    return COL_BG_RAIN; // 雨
+  if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86))
+    return COL_BG_SNOW; // 雪
+  if (code >= 95)
+    return COL_BG_THUNDER; // 雷
+  return ST77XX_BLACK;     // 不明
+}
+
+// --- 天気アイコン描画関数 (図形プリミティブによる描画) ---
+// デザイン案に基づき、36x36pxの範囲内でアイコンを描く
+void drawWeatherIcon(int x, int y, int code)
+{
+  if (code == 0)
+  { // 快晴: 太陽
+    tft.fillCircle(x + 18, y + 18, 10, ST77XX_ORANGE);
+    for (int i = 0; i < 360; i += 45)
+    {
+      float rad = i * DEG_TO_RAD;
+      tft.drawLine(x + 18 + cos(rad) * 12, y + 18 + sin(rad) * 12,
+                   x + 18 + cos(rad) * 16, y + 18 + sin(rad) * 16, ST77XX_YELLOW);
+    }
+  }
+  else if (code >= 1 && code <= 3)
+  {                                            // 曇り系
+    tft.fillCircle(x + 14, y + 22, 7, 0x8410); // 暗いグレー
+    tft.fillCircle(x + 22, y + 18, 9, 0xAD55); // 明るいグレー
+    tft.fillCircle(x + 28, y + 22, 6, 0x8410);
+  }
+  else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82))
+  {                                            // 雨系
+    tft.fillCircle(x + 18, y + 15, 8, 0x8410); // 雲
+    for (int i = 0; i < 3; i++)                // 雨粒（斜め線）
+      tft.drawLine(x + 12 + i * 6, y + 25, x + 10 + i * 6, y + 32, ST77XX_CYAN);
+  }
+  else if (code >= 95)
+  {                                            // 雷系
+    tft.fillCircle(x + 18, y + 15, 8, 0x4208); // 黒雲
+    tft.fillTriangle(x + 20, y + 20, x + 14, y + 29, x + 19, y + 29, ST77XX_YELLOW);
+    tft.fillTriangle(x + 18, y + 27, x + 23, y + 27, x + 16, y + 36, ST77XX_YELLOW);
+  }
+  else
+  { // 霧・雪など: 横線で表現
+    for (int i = 0; i < 3; i++)
+      tft.drawRoundRect(x + 4, y + 12 + i * 8, 28, 3, 1, ST77XX_WHITE);
+  }
+}
+
 // --- ユーティリティ ---
 // 指定エリアを背景色（デフォルト黒）で塗りつぶすヘルパー関数
 // 再描画前の残像消去に使用する
@@ -191,8 +258,9 @@ void drawClock()
     return;
   strcpy(prevTimeStr, timeStr); // キャッシュを更新
 
-  // 時計エリアのみ消去してから再描画（画面全体クリアより高速）
-  clearArea(AREA_CLOCK_Y, AREA_CLOCK_H);
+// 時計エリアのみ消去してから再描画（画面全体クリアより高速）
+// 時計エリア背景色を適用
+  clearArea(AREA_CLOCK_Y, AREA_CLOCK_H, COL_BG_CLOCK);
   tft.setTextColor(ST77XX_GREEN);
   tft.setTextSize(2);
   tft.setCursor(15, 6);
@@ -204,13 +272,17 @@ void drawClock()
 // 都市切替タイミングでのみ呼ばれる（頻度が低いためキャッシュ不要）
 void drawCity()
 {
-  clearArea(AREA_CITY_Y, AREA_CITY_H);
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
   // Stringを一度変数に格納しメモリ確保を明示（ポインター破綻防止）
   String label = String(cities[cityIndex].name);
   u8g2.setCursor(8, AREA_CITY_Y + AREA_CITY_H - 4);     // ベースライン: エリア下端から4px上
   u8g2.print(label.c_str());                            // String → const char* へ変換して渡す
+
+  // 都市名の下のラインを描画 (黒背景化を防ぐためテーマに馴染む色を使用)
+  tft.drawFastHLine(0, AREA_CITY_Y + AREA_CITY_H + 2, 128, 0x4208); 
+
   Serial.printf("[City] %s\n", cities[cityIndex].name); // デバッグ: 都市切替を確認
 }
 
@@ -218,36 +290,57 @@ void drawCity()
 // 天気データ更新時・都市切替時のみ呼ばれる
 void drawTemp()
 {
-  clearArea(AREA_TEMP_Y, AREA_TEMP_H);
-  u8g2.setFont(u8g2_font_logisoso32_tr); // 大型数字フォント
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
+
+  // 天気アイコンを左側に描画
+  drawWeatherIcon(8, AREA_TEMP_Y + 4, currentWeatherCode);
+
+  // 気温の表示位置をアイコンを避けて右にシフト
+  u8g2.setFont(u8g2_font_logisoso24_tr); // アイコンと並べるため少しサイズダウン(32→24)
   u8g2.setForegroundColor(ST77XX_CYAN);
-  u8g2.setCursor(8, AREA_TEMP_Y + AREA_TEMP_H - 4); // ベースライン: エリア下端から4px上
+  u8g2.setCursor(48, AREA_TEMP_Y + AREA_TEMP_H - 18); // X座標を8→48へ変更
   char buf[16];
   snprintf(buf, sizeof(buf), "%.1f", currentTemp); // 小数点1桁で整形
   u8g2.print(buf);
   // 「度」だけ日本語フォントに切り替えて続けて描画
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.print("度");
+
+  // 気温の下のラインを描画
+  tft.drawFastHLine(0, AREA_TEMP_Y + AREA_TEMP_H + 2, 128, 0x4208);
 }
 
 // 天気説明エリアのみ再描画
 // 天気データ更新時・都市切替時のみ呼ばれる
 void drawWeather()
 {
-  clearArea(AREA_WEATHER_Y, AREA_WEATHER_H);
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(8, AREA_WEATHER_Y + AREA_WEATHER_H - 4); // ベースライン: エリア下端から4px上
+  u8g2.setCursor(8, AREA_WEATHER_Y + AREA_WEATHER_H - 12); // 少し上に調整
   String ws = getWeatherJp(currentWeatherCode);
   u8g2.print(ws.c_str()); // String → const char* へ変換して渡す
+  
+  // 境界線（アクセント）を描画
+  //tft.drawFastHLine(4, AREA_WEATHER_Y - 4, 120, 0x4208);
 }
 
 // 気温・天気説明をまとめて更新し、キャッシュを同期する
 // 都市切替時・定期取得でデータが変化した時に呼ぶ
 void drawWeatherInfo()
 {
+  // 時計エリアの下から画面最下部までを一括で背景色に塗りつぶす
+  // これにより、文字や単位、ラインの隙間に黒色が残るのを防ぎます
+  uint16_t bg = getBgColor(currentWeatherCode);
+  tft.fillRect(0, AREA_CITY_Y, 128, 160 - AREA_CITY_Y, bg);
+
+  // 文字の背景色を画面の背景色と完全に一致させることで、黒い四角を防ぎます
+  u8g2.setBackgroundColor(bg);
+
+  drawCity();
   drawTemp();
   drawWeather();
+
   // キャッシュを現在値で更新（次回の差分チェックに使用）
   prevTemp = currentTemp;
   prevWeatherCode = currentWeatherCode;
@@ -376,8 +469,8 @@ void setup()
   // --- 初回データ取得 & 全エリア描画 ---
   Serial.println(F("[Setup] Initial weather fetch..."));
   updateWeather();
-  drawCity();        // 都市名エリアを描画
-  drawWeatherInfo(); // 気温・天気説明エリアを描画
+  // 都市名とウェザーインフォを一括描画するために drawWeatherInfo を呼ぶ
+  drawWeatherInfo(); 
 
   Serial.println(F("[Setup] Setup complete. Entering loop."));
 }
@@ -400,8 +493,8 @@ void loop()
     cityIndex = (cityIndex + 1) % cityCount; // 最後の都市の次は先頭に戻る
     Serial.printf("[Loop] Switching city -> %s\n", cities[cityIndex].name);
     updateWeather();   // 新しい都市の天気を即座に取得
-    drawCity();        // 都市名を即座に更新
-    drawWeatherInfo(); // 気温・天気も即座に更新
+    // 背景・都市名・気温・天気をすべて一括で更新
+    drawWeatherInfo(); 
     prevCityIndex = cityIndex;
     lastCitySwitch = now;
   }
