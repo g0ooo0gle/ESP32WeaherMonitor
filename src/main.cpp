@@ -73,15 +73,18 @@ int currentWeatherCode = 0;
 int cityCount = sizeof(cities) / sizeof(CityData);
 
 // タイマー管理 (millisを利用した非ブロッキング処理)
-unsigned long lastWeatherUpdate = 0;
+// unsigned long lastWeatherUpdate = 0;
+// unsigned long lastCitySwitch = 0;
+// unsigned long lastScreenUpdate = 0;
+unsigned long lastWeatherSuccess = 0; // 天気データ取得成功時刻
+unsigned long lastFetchAttempt = 0;   // API通信試行時刻
 unsigned long lastCitySwitch = 0;
-// unsigned long lastTimeUpdate = 0;
 unsigned long lastScreenUpdate = 0;
 
-const unsigned long weatherInterval = 15UL * 60UL * 1000UL; // 天気取得: 15分
-const unsigned long citySwitchInterval = 15000UL;            // 表示切替: 15秒
-// const unsigned long timeUpdateInterval = 500;        // 時計更新: 0.5秒
-const unsigned long screenInterval = 1000UL; // 1秒（画面更新）
+const unsigned long fetchInterval = 15UL * 60UL * 1000UL; // 天気取得: 15分
+const unsigned long citySwitchInterval = 15000UL;         // 表示切替: 15秒
+const unsigned long screenInterval = 500;        // 時計更新: 0.5秒
+//const unsigned long screenInterval = 1000UL; // 1秒（画面更新）
 
 // --- WMO天気コードを日本語テキストに完全変換 ---
 // Open-Meteoが採用している国際基準のコード表をすべて網羅
@@ -151,14 +154,15 @@ String getWeatherJp(int code)
 }
 
 // 天気情報取得（Wi‑Fi が接続されていることが前提）
-void updateWeather()
+bool updateWeather()
 {
   if (WiFi.status() != WL_CONNECTED)
   {
-    return;
+    return false;
   }
 
   HTTPClient http;
+  http.setTimeout(3000); // 通信ハング防止
   // 緯度・経度・タイムゾーンを指定してJSONを取得
   String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(cities[cityIndex].lat) +
                "&longitude=" + String(cities[cityIndex].lon) +
@@ -175,9 +179,18 @@ void updateWeather()
     DeserializationError err = deserializeJson(doc, payload);
     if (!err)
     {
-      currentTemp = doc["current_weather"]["temperature"].as<float>();
-      currentWeatherCode = doc["current_weather"]["weathercode"].as<int>();
-      lastWeatherUpdate = millis(); // 成功したら更新時刻を記録
+      float newTemp = doc["current_weather"]["temperature"].as<float>();
+      int newWeatherCode = doc["current_weather"]["weathercode"].as<int>();
+
+      // 値が変動している場合のみ更新（画面チック防止）
+      if (currentTemp != newTemp || currentWeatherCode != newWeatherCode)
+      {
+        currentTemp = newTemp;
+        currentWeatherCode = newWeatherCode;
+        lastWeatherSuccess = millis(); // 成功し、データが更新された時刻を記録
+        return true;
+      }
+      return true; // データは同じだが通信は成功
     }
     else
     {
@@ -189,24 +202,15 @@ void updateWeather()
     Serial.printf("HTTP GET failed, code: %d\n", httpCode);
   }
   http.end();
-
 }
 
 /* 画面全体の再描画（毎秒呼び出す） */
 void drawFullScreen()
 {
+  // 全体を一度クリア（前回の文字が幅を変えて表示された際の痕跡・ちらつき防止）
+  tft.fillRect(0, 0, 128, 160, ST77XX_BLACK);
   // 時計領域（上部）
-  tft.fillRect(0, 0, 128, 32, ST77XX_BLACK);
   tft.drawFastHLine(0, 30, 128, ST77XX_WHITE);
-
-  // 都市名領域
-  tft.fillRect(0, 32, 128, 36, ST77XX_BLACK);
-
-  // 気温領域
-  tft.fillRect(0, 68, 128, 64, ST77XX_BLACK);
-
-  // 天気説明領域
-  tft.fillRect(0, 132, 128, 28, ST77XX_BLACK);
 
   // --- 時計 ---
   struct tm ti;
@@ -228,31 +232,40 @@ void drawFullScreen()
   }
 
   // --- 都市名（日本語） ---
-  u8g2.setFont(u8g2_font_unifont_t_japanese1);
+  u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
+  // Stringを一度変数に格納しメモリ確保を明示（ポインター破綻防止）
+  String cityLabel = String("") + String(cities[cityIndex].name) + String("");
+  u8g2.setCursor(8, 52); // ベースライン微調整
+  u8g2.print(cityLabel.c_str());
+
+  // 気温領域背景
+  tft.fillRect(0, 68, 128, 64, ST77XX_BLACK);
+
   // u8g2 のカーソル位置はピクセルで指定（ベースラインに注意）
-  u8g2.setCursor(8, 55);
-  String cityLabel = String("【") + String(cities[cityIndex].name) + String("】");
+  // u8g2.setCursor(8, 55);
+  // String cityLabel = String("【") + String(cities[cityIndex].name) + String("】");
   // u8g2.print(cityLabel);
-  u8g2.print(cityLabel.c_str()); // ←String → const char* へ変換
+  // u8g2.print(cityLabel.c_str()); // ←String → const char* へ変換
 
   // --- 気温 ---
   u8g2.setFont(u8g2_font_logisoso32_tr);
   u8g2.setForegroundColor(ST77XX_CYAN);
   u8g2.setCursor(8, 110);
-  // 小数点1桁
   char tempBuf[16];
   snprintf(tempBuf, sizeof(tempBuf), "%.1f", currentTemp);
   u8g2.print(tempBuf);
-  u8g2.setFont(u8g2_font_unifont_t_japanese1);
-  u8g2.print("°C");
+  u8g2.setFont(u8g2_font_b16_t_japanese3);
+  u8g2.print("度");
 
-  // --- 天気説明 ---
+  // 天気説明領域背景
+  tft.fillRect(0, 134, 128, 26, ST77XX_BLACK);
+
+  // --- 天気説明（元の処理を回復） ---
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setCursor(8, 150);
-  // u8g2.print("天気: " + getWeatherJp(currentWeatherCode));
   String weatherStr = getWeatherJp(currentWeatherCode);
-  u8g2.print(weatherStr.c_str()); // ←String → const char* へ変換
+  u8g2.print(weatherStr.c_str()); // ←元の処理を回復
 }
 
 void setup()
@@ -267,7 +280,7 @@ void setup()
   u8g2.begin(tft);
 
   // WiFi接続 (未設定時は "ESP32_Weather_Config" というAPになる)
-  u8g2.setFont(u8g2_font_unifont_t_japanese1);
+  u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setCursor(0, 80);
   u8g2.print("WiFi setup...");
@@ -296,17 +309,16 @@ void setup()
   configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com");
   Serial.println("time setup done.");
 
+  // タイマー初期化
+  lastWeatherSuccess = 0;
+  lastFetchAttempt = millis() - fetchInterval; // 初回は即座に試行させる
+  lastCitySwitch = millis();
+  lastScreenUpdate = millis();
+
   // 最初の天気取得
   updateWeather();
   // 初回画面描画
   drawFullScreen();
-
-  // タイマー初期化
-  lastWeatherUpdate = millis();
-  lastCitySwitch = millis();
-  lastScreenUpdate = millis();
-
-  // drawMainUI();
 }
 
 void loop()
@@ -320,25 +332,29 @@ void loop()
     lastScreenUpdate = now;
   }
 
-  // 都市切替（8秒）
+  // 都市切替（15秒）
   if (now - lastCitySwitch >= citySwitchInterval)
   {
     cityIndex = (cityIndex + 1) % cityCount;
-    // 新しい都市の天気を即座に取得（非頻繁）
+    // 新しい都市の天気を即座に取得
     updateWeather();
     // 次の秒の更新で画面が変わる（既に毎秒更新なのでここではdrawしなくてOK）
     lastCitySwitch = now;
   }
 
   // 定期天気更新（15分）
-  if (now - lastWeatherUpdate >= weatherInterval)
+  if (now - lastFetchAttempt >= fetchInterval)
   {
-    updateWeather();
-    // lastWeatherUpdate は updateWeather() 成功時に更新されます
-    // 失敗対策が必要ならここで再試行ロジックを入れてください
+    if (updateWeather())
+    {
+      lastFetchAttempt = now; // 通信成功時にのみ次の試行タイマーをリセット
+    }
+    else
+    {
+      // 失敗した場合は次回インターバルまで待機（レート制限・通信不安定対策）
+      lastFetchAttempt = now;
+    }
   }
 
   // ここで delay は使わない（ノンブロッキング）
-
 }
-
