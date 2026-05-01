@@ -183,25 +183,30 @@ void updateWeather()
 void drawMainUI()
 {
   tft.fillScreen(ST77XX_BLACK);
-  tft.drawFastHLine(0, 26, 160, ST77XX_WHITE); // 上部境界線
+  // 境界線（時計とコンテンツの間）
+  tft.drawFastHLine(0, 30, 128, ST77XX_WHITE); // 上部境界線
 
-  // 気温の表示 (大きなフォント)
-  u8g2.setFont(u8g2_font_logisoso24_tr);
+  // 1. 都市名（中央上部）
+  u8g2.setFont(u8g2_font_unifont_t_japanese1);
+  u8g2.setForegroundColor(ST77XX_YELLOW);
+  u8g2.setCursor(10, 55);
+  u8g2.print("【" + String(cities[cityIndex].name) + "】");
+
+  // 2. 気温（画面中央に大きく表示）
+  // u8g2.setFont(u8g2_font_logisoso24_tr);
+  u8g2.setFont(u8g2_font_logisoso32_tr); // さらに大きなフォント
   u8g2.setForegroundColor(ST77XX_CYAN);
-  u8g2.setCursor(10, 75);
+
+  // 中央寄せのための調整
+  u8g2.setCursor(15, 105);
   u8g2.print(String(currentTemp, 1));
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
-  u8g2.print(" ℃");
+  u8g2.print("°C");
 
-  // 天気状態の表示
+  // 3. 天気説明（下部） 天気状態の表示
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 110);
+  u8g2.setCursor(10, 140);
   u8g2.print("天気: " + getWeatherJp(currentWeatherCode));
-
-  // 現在の都市名表示 (下部)
-  u8g2.setForegroundColor(ST77XX_YELLOW);
-  u8g2.setCursor(35, 145);
-  u8g2.print("-- " + String(cities[cityIndex].name) + " --");
 }
 
 // 時計のみを部分更新 (毎秒実行)
@@ -209,16 +214,20 @@ void updateClockDisplay()
 {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo))
+  {
     return;
+  }
 
   char timeStr[20];
   strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
 
-  // 時計表示エリア(100x20)のみを黒塗りで消去して上書き
-  tft.fillRect(5, 5, 120, 20, ST77XX_BLACK);
+  // 最上部のエリア(128x28)だけをクリア
+  tft.fillRect(0, 0, 128, 28, ST77XX_BLACK);
+
+  // 時計表示（少し小さめのフォントで1行に収める）
   tft.setTextColor(ST77XX_GREEN);
   tft.setTextSize(2);
-  tft.setCursor(5, 5);
+  tft.setCursor(15, 8);
   tft.print(timeStr);
 }
 
@@ -229,33 +238,33 @@ void setup()
   // LCD初期化
   // TFTディスプレイと日本語ライブラリの開始
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(1);
+  tft.setRotation(0); // 縦向きに変更 (128x160)
   tft.fillScreen(ST77XX_BLACK);
   u8g2.begin(tft);
 
   // WiFi接続 (未設定時は "ESP32_Weather_Config" というAPになる)
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(0, 40);
-  u8g2.print("WiFi設定を待機中...");
+  u8g2.setCursor(0, 80);
+  u8g2.print("WiFi setup...");
   Serial.println("wifi setup...");
 
   // 1. WiFiManager起動
-
   WiFiManager wm;
   if (!wm.autoConnect("ESP32_Weather_Config"))
   {
     Serial.println("Failed to connect");
     ESP.restart();
   }
+
   tft.fillScreen(ST77XX_BLACK);
-  u8g2.setCursor(0, 40);
+  u8g2.setCursor(0, 80);
   u8g2.print("WiFi接続完了！");
   Serial.println("connected.");
 
   // 2. 時刻同期 (NTP)
   tft.fillScreen(ST77XX_BLACK);
-  u8g2.setCursor(0, 40);
+  u8g2.setCursor(0, 80);
   u8g2.print("時刻同期中...");
   Serial.println("time setup...");
 
@@ -304,7 +313,6 @@ void loop()
   displayLayout();
   delay(5000);
   cityIndex = (cityIndex + 1) % (sizeof(cities) / sizeof(CityData));
-
 }
 
 void displayLayout()
