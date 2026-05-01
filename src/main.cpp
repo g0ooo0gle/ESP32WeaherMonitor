@@ -334,6 +334,9 @@ void drawWeatherInfo()
   uint16_t bg = getBgColor(currentWeatherCode);
   tft.fillRect(0, AREA_CITY_Y, 128, 160 - AREA_CITY_Y, bg);
 
+  // 文字の背景色を画面の背景色と完全に一致させることで、黒い四角を防ぎます
+  u8g2.setBackgroundColor(bg);
+
   drawCity();
   drawTemp();
   drawWeather();
