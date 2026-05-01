@@ -272,15 +272,17 @@ void drawClock()
 // 都市切替タイミングでのみ呼ばれる（頻度が低いためキャッシュ不要）
 void drawCity()
 {
-  // 背景色を天気状況に応じて動的に変更
-  uint16_t bg = getBgColor(currentWeatherCode);
-  clearArea(AREA_CITY_Y, AREA_CITY_H, bg);
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
   // Stringを一度変数に格納しメモリ確保を明示（ポインター破綻防止）
   String label = String(cities[cityIndex].name);
   u8g2.setCursor(8, AREA_CITY_Y + AREA_CITY_H - 4);     // ベースライン: エリア下端から4px上
   u8g2.print(label.c_str());                            // String → const char* へ変換して渡す
+
+  // 都市名の下のラインを描画 (黒背景化を防ぐためテーマに馴染む色を使用)
+  tft.drawFastHLine(0, AREA_CITY_Y + AREA_CITY_H + 2, 128, 0x4208); 
+
   Serial.printf("[City] %s\n", cities[cityIndex].name); // デバッグ: 都市切替を確認
 }
 
@@ -288,9 +290,7 @@ void drawCity()
 // 天気データ更新時・都市切替時のみ呼ばれる
 void drawTemp()
 {
-// 背景色を天気状況に応じて動的に変更
-  uint16_t bg = getBgColor(currentWeatherCode);
-  clearArea(AREA_TEMP_Y, AREA_TEMP_H, bg);
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
 
   // 天気アイコンを左側に描画
   drawWeatherIcon(8, AREA_TEMP_Y + 4, currentWeatherCode);
@@ -305,15 +305,16 @@ void drawTemp()
   // 「度」だけ日本語フォントに切り替えて続けて描画
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.print("度");
+
+  // 気温の下のラインを描画
+  tft.drawFastHLine(0, AREA_TEMP_Y + AREA_TEMP_H + 2, 128, 0x4208);
 }
 
 // 天気説明エリアのみ再描画
 // 天気データ更新時・都市切替時のみ呼ばれる
 void drawWeather()
 {
-// 背景色を天気状況に応じて動的に変更
-  uint16_t bg = getBgColor(currentWeatherCode);
-  clearArea(AREA_WEATHER_Y, AREA_WEATHER_H, bg);
+  // 注: drawWeatherInfoで背景を一括塗りつぶすため、ここでは個別にclearArea(黒塗り)しない
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setCursor(8, AREA_WEATHER_Y + AREA_WEATHER_H - 12); // 少し上に調整
@@ -321,15 +322,22 @@ void drawWeather()
   u8g2.print(ws.c_str()); // String → const char* へ変換して渡す
   
   // 境界線（アクセント）を描画
-  tft.drawFastHLine(4, AREA_WEATHER_Y - 4, 120, 0x4208);
+  //tft.drawFastHLine(4, AREA_WEATHER_Y - 4, 120, 0x4208);
 }
 
 // 気温・天気説明をまとめて更新し、キャッシュを同期する
 // 都市切替時・定期取得でデータが変化した時に呼ぶ
 void drawWeatherInfo()
 {
+  // 時計エリアの下から画面最下部までを一括で背景色に塗りつぶす
+  // これにより、文字や単位、ラインの隙間に黒色が残るのを防ぎます
+  uint16_t bg = getBgColor(currentWeatherCode);
+  tft.fillRect(0, AREA_CITY_Y, 128, 160 - AREA_CITY_Y, bg);
+
+  drawCity();
   drawTemp();
   drawWeather();
+
   // キャッシュを現在値で更新（次回の差分チェックに使用）
   prevTemp = currentTemp;
   prevWeatherCode = currentWeatherCode;
@@ -458,8 +466,8 @@ void setup()
   // --- 初回データ取得 & 全エリア描画 ---
   Serial.println(F("[Setup] Initial weather fetch..."));
   updateWeather();
-  drawCity();        // 都市名エリアを描画
-  drawWeatherInfo(); // 気温・天気説明エリアを描画
+  // 都市名とウェザーインフォを一括描画するために drawWeatherInfo を呼ぶ
+  drawWeatherInfo(); 
 
   Serial.println(F("[Setup] Setup complete. Entering loop."));
 }
@@ -482,8 +490,8 @@ void loop()
     cityIndex = (cityIndex + 1) % cityCount; // 最後の都市の次は先頭に戻る
     Serial.printf("[Loop] Switching city -> %s\n", cities[cityIndex].name);
     updateWeather();   // 新しい都市の天気を即座に取得
-    //drawCity();        // 都市名を即座に更新 drawWeatherInfo内で一括描画するように変更
-    drawWeatherInfo(); // 気温・天気・背景を即座に更新
+    // 背景・都市名・気温・天気をすべて一括で更新
+    drawWeatherInfo(); 
     prevCityIndex = cityIndex;
     lastCitySwitch = now;
   }
