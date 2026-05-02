@@ -1,15 +1,16 @@
 /**
  * ESP32 Weather Station - ネットワーク・通信機能 実装
  *
- * [変更点]
- *   - updateWeeklyForecast() を新設
- *     Open-Meteo の daily API で週間天気（最高・最低気温・天気コード）を取得します。
+ * [今回の変更点]
+ *   - updateHourlyForecast() を新設
+ *     Open-Meteo の hourly API で毎時の気温と天気コードを取得し、
+ *     現在時刻以降の6時間分を hourlyForecast[] に格納します。
  */
 
 #include "network.h"
 #include "cities.h"
 #include "display.h"
-#include "weather.h"   // DailyForecast 構造体、weeklyForecast[] を使うため
+#include "weather.h"
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -24,10 +25,6 @@ bool setupWiFi()
 {
   WiFiManager wm;
 
-  // autoConnect():
-  //   (1) 保存済みSSID/パスワードがあれば自動接続
-  //   (2) なければ "ESP32_Weather_Config" という AP を起動
-  //       → スマホで接続 → 192.168.4.1 にアクセス → SSID/パスワード設定
   if (!wm.autoConnect("ESP32_Weather_Config"))
   {
     Serial.println(F("[Network] WiFi接続に失敗しました。再起動します..."));
@@ -45,8 +42,6 @@ bool setupWiFi()
 // ================================================================
 void setupNTP()
 {
-  // configTime(時差秒, サマータイム秒, NTPサーバー1, NTPサーバー2)
-  // JSTはUTC+9 = 9×3600秒。サマータイムは日本にないので0。
   configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com");
 }
 
@@ -62,9 +57,8 @@ bool updateWeather()
   }
 
   HTTPClient http;
-  http.setTimeout(3000);   // 3秒でタイムアウト
+  http.setTimeout(3000);
 
-  // current_weather=true で現在の気温とWMOコードを取得
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
                + String(cities[cityIndex].lat, 4)
                + "&longitude="
@@ -81,7 +75,6 @@ bool updateWeather()
   {
     String payload = http.getString();
 
-    // ArduinoJson でパース（2048バイトのバッファ）
     DynamicJsonDocument doc(2048);
     DeserializationError err = deserializeJson(doc, payload);
 
@@ -117,17 +110,7 @@ bool updateWeather()
 }
 
 // ================================================================
-// Open-Meteo API から週間天気予報データを取得（新規）
-//
-// [取得するデータ]
-//   daily:
-//     - weathercode        : 各日の代表WMO天気コード
-//     - temperature_2m_max : 最高気温
-//     - temperature_2m_min : 最低気温
-//
-// [ラベルの付け方]
-//   取得した日付を getLocalTime() で取得した今日の日付と比較し、
-//   今日なら "今日"、明日なら "明日"、それ以降は曜日（"月"〜"日"）を付けます。
+// Open-Meteo API から週間天気予報データを取得
 // ================================================================
 bool updateWeeklyForecast()
 {
@@ -138,9 +121,8 @@ bool updateWeeklyForecast()
   }
 
   HTTPClient http;
-  http.setTimeout(5000);   // 週間天気は応答が少し大きいため5秒に設定
+  http.setTimeout(5000);
 
-  // daily パラメータで最大7日分を取得（past_days=0 で今日から未来のみ）
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
                + String(cities[cityIndex].lat, 4)
                + "&longitude="
@@ -163,7 +145,6 @@ bool updateWeeklyForecast()
   String payload = http.getString();
   http.end();
 
-  // weekly レスポンスは大きいので 4096 バイトのバッファを用意
   DynamicJsonDocument doc(4096);
   DeserializationError err = deserializeJson(doc, payload);
   if (err)
@@ -172,17 +153,11 @@ bool updateWeeklyForecast()
     return false;
   }
 
-  // daily オブジェクト内の配列を取得
   JsonArray codes   = doc["daily"]["weathercode"];
   JsonArray maxArr  = doc["daily"]["temperature_2m_max"];
   JsonArray minArr  = doc["daily"]["temperature_2m_min"];
-  JsonArray dateArr = doc["daily"]["time"];   // "2025-01-01" 形式の文字列配列
+  JsonArray dateArr = doc["daily"]["time"];
 
-  // 今日の日付を取得（ラベル付けに使用）
-  struct tm today;
-  getLocalTime(&today);
-
-  // データを weeklyForecast[] に格納（最大 WEEKLY_DAYS 日分）
   weeklyDays = 0;
   for (int i = 0; i < (int)codes.size() && i < WEEKLY_DAYS; i++)
   {
@@ -190,43 +165,161 @@ bool updateWeeklyForecast()
     weeklyForecast[i].tempMax     = maxArr[i].as<float>();
     weeklyForecast[i].tempMin     = minArr[i].as<float>();
 
-    // ラベルを決定する
-    // dateArr[i] は "2025-01-15" のような文字列なので、月日だけ切り出す
     const char *dateStr = dateArr[i].as<const char*>();
 
     if (i == 0)
     {
-      // 0日目は必ず今日
       strncpy(weeklyForecast[i].label, "今日", sizeof(weeklyForecast[i].label) - 1);
     }
     else if (i == 1)
     {
-      // 1日目は必ず明日
       strncpy(weeklyForecast[i].label, "明日", sizeof(weeklyForecast[i].label) - 1);
     }
     else
     {
-      // 2日目以降は曜日を計算して表示（"月" 〜 "日"）
-      // ISO日付文字列 "2025-01-15" を tm 構造体に変換
       struct tm t = {};
-      // sscanf で年月日を読み取る
       sscanf(dateStr, "%d-%d-%d", &t.tm_year, &t.tm_mon, &t.tm_mday);
-      t.tm_year -= 1900;   // tm_year は 1900 年からの差分
-      t.tm_mon  -= 1;      // tm_mon は 0〜11
-      mktime(&t);          // tm_wday（曜日）を計算させる
+      t.tm_year -= 1900;
+      t.tm_mon  -= 1;
+      mktime(&t);
 
-      // 曜日テーブル（0=日, 1=月, ..., 6=土）
-      // 短い2バイト文字（1文字）で収めます
       const char *weekdays[] = {"日", "月", "火", "水", "木", "金", "土"};
       strncpy(weeklyForecast[i].label,
               weekdays[t.tm_wday],
               sizeof(weeklyForecast[i].label) - 1);
     }
-    weeklyForecast[i].label[sizeof(weeklyForecast[i].label) - 1] = '\0';   // 終端保証
+    weeklyForecast[i].label[sizeof(weeklyForecast[i].label) - 1] = '\0';
 
     weeklyDays++;
   }
 
   Serial.printf("[Weekly] 取得完了: %d日分\n", weeklyDays);
+  return true;
+}
+
+// ================================================================
+// Open-Meteo API から毎時天気予報データを取得（新規）
+//
+// [取得するデータ]
+//   hourly:
+//     - time           : "2025-01-15T14:00" 形式の時刻文字列配列
+//     - temperature_2m : 各時刻の気温
+//     - weathercode    : 各時刻のWMO天気コード
+//
+// [処理の流れ]
+//   1. APIで24時間分のhourlyデータを取得（forecast_days=2 で48時間分）
+//   2. 取得した時刻配列の中から「現在時刻と同じか直後の時刻」を探す
+//   3. そこから6時間分を hourlyForecast[] に格納
+//
+// [ラベルの付け方]
+//   先頭は "今" 、それ以降は "HH時"（例: "14時"）
+// ================================================================
+bool updateHourlyForecast()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println(F("[Hourly] WiFi未接続のためスキップします。"));
+    return false;
+  }
+
+  HTTPClient http;
+  http.setTimeout(8000);   // 毎時データは多めなので8秒
+
+  // hourly パラメータで2日分（48時間）を取得
+  String url = "https://api.open-meteo.com/v1/forecast?latitude="
+               + String(cities[cityIndex].lat, 4)
+               + "&longitude="
+               + String(cities[cityIndex].lon, 4)
+               + "&hourly=temperature_2m,weathercode"
+               + "&timezone=Asia%2FTokyo"
+               + "&forecast_days=2";
+
+  Serial.printf("[Hourly] 取得: %s\n", cities[cityIndex].name);
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode != HTTP_CODE_OK)
+  {
+    Serial.printf("[Hourly] HTTP失敗 code=%d\n", httpCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  // 48時間分の hourly データはサイズが大きいので 16KB のバッファを確保
+  // ESP32 はヒープに余裕があるが、念のため使い終わったらすぐ解放されます。
+  DynamicJsonDocument doc(16384);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err)
+  {
+    Serial.printf("[Hourly] JSONパースエラー: %s\n", err.c_str());
+    return false;
+  }
+
+  JsonArray timeArr  = doc["hourly"]["time"];
+  JsonArray tempArr  = doc["hourly"]["temperature_2m"];
+  JsonArray codeArr  = doc["hourly"]["weathercode"];
+
+  // 現在時刻を取得（startIndex を決めるのに使う）
+  struct tm now;
+  if (!getLocalTime(&now)) {
+    Serial.println(F("[Hourly] 時刻取得失敗"));
+    return false;
+  }
+  int currentHour = now.tm_hour;
+  int currentDay  = now.tm_mday;
+
+  // 現在時刻と一致するエントリを探す
+  // API の time は "2025-01-15T14:00" のフォーマット
+  int startIndex = -1;
+  for (int i = 0; i < (int)timeArr.size(); i++)
+  {
+    const char *tstr = timeArr[i].as<const char*>();
+    // "YYYY-MM-DDTHH:MM" の HH 部分を切り出す
+    int day, hour;
+    if (sscanf(tstr, "%*d-%*d-%dT%d", &day, &hour) == 2)
+    {
+      if (day == currentDay && hour == currentHour)
+      {
+        startIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (startIndex == -1) {
+    Serial.println(F("[Hourly] 現在時刻のエントリが見つかりません"));
+    return false;
+  }
+
+  // startIndex から HOURLY_HOURS 個ぶんを格納
+  hourlyHours = 0;
+  for (int i = 0; i < HOURLY_HOURS; i++)
+  {
+    int idx = startIndex + i;
+    if (idx >= (int)timeArr.size()) break;
+
+    hourlyForecast[i].weatherCode = codeArr[idx].as<int>();
+    hourlyForecast[i].temp        = tempArr[idx].as<float>();
+
+    // ラベル決定
+    if (i == 0) {
+      strncpy(hourlyForecast[i].label, "今", sizeof(hourlyForecast[i].label) - 1);
+    } else {
+      const char *tstr = timeArr[idx].as<const char*>();
+      int day, hour;
+      sscanf(tstr, "%*d-%*d-%dT%d", &day, &hour);
+      // "14時" のような表示
+      snprintf(hourlyForecast[i].label, sizeof(hourlyForecast[i].label),
+               "%d時", hour);
+    }
+    hourlyForecast[i].label[sizeof(hourlyForecast[i].label) - 1] = '\0';
+
+    hourlyHours++;
+  }
+
+  Serial.printf("[Hourly] 取得完了: %d時間分\n", hourlyHours);
   return true;
 }

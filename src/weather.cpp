@@ -1,29 +1,27 @@
 /**
  * ESP32 Weather Station - 天気関連機能 実装
  *
- * [このファイルの役割]
- *   - WMO天気コード → 日本語テキスト変換 (getWeatherJp)
- *   - WMO天気コード → 背景色変換         (getBgColor)
- *   - WMO天気コード → アイコン描画        (drawWeatherIcon)
- *   - 週間天気の描画                       (drawWeeklyForecast) ← 新規追加
+ * [今回の変更点]
+ *   - 日本語フォントを japanese3 サブセットに完全統一
+ *     旧: japanese1 (収録漢字が少なく「概」「概ね」など欠落)
+ *     新: japanese3 (JIS第1水準の大部分を収録)
  *
- * [アイコン対応グループ]
- *   code 0        : 快晴（太陽）
- *   code 1        : 概ね晴れ（太陽＋薄い雲）
- *   code 2〜3     : 曇り（明るい雲・暗い雲）
- *   code 45〜48   : 霧（横線3本）
- *   code 51〜67   : 雨（雲＋雨粒、強さで本数変化）
- *   code 71〜77   : 雪（雲＋雪の結晶）
- *   code 80〜82   : にわか雨（雨と同じ）
- *   code 85〜86   : 雪のシャワー（雪と同じ）
- *   code 95〜99   : 雷雨（黒雲＋稲妻）
+ *   - 詳細エリアが 60px → 82px に拡大したため、1行の高さを
+ *     60/6=10px → 82/6=13px に変更し、フォントも一回り大きくしました。
+ *
+ *   - 「概ね晴れ」「霧雨」「雷雨と軽い雹」など、画数の多い漢字を
+ *     含む天気表現も化けずに表示されます。
  */
 
 #include "weather.h"
 
-// 週間天気データの実体定義（weather.h で extern 宣言済み）
+// 週間天気データの実体定義
 DailyForecast weeklyForecast[WEEKLY_DAYS];
-int           weeklyDays = 0;   // 実際に取得できた日数
+int           weeklyDays = 0;
+
+// 毎時天気データの実体定義
+HourlyForecast hourlyForecast[HOURLY_HOURS];
+int            hourlyHours = 0;
 
 // ================================================================
 // WMO天気コードを日本語テキストに完全変換
@@ -64,7 +62,7 @@ String getWeatherJp(int code)
 }
 
 // ================================================================
-// 天気コードから背景色を判定する関数
+// 天気コードから背景色を判定
 // ================================================================
 uint16_t getBgColor(int code)
 {
@@ -78,31 +76,46 @@ uint16_t getBgColor(int code)
 }
 
 // ================================================================
-// [内部ヘルパー] 雲を描画する
-//   cx, cy : 雲全体の重心座標
-//   color  : 雲の色（明るいグレー〜黒雲まで使い分け）
+// 気温＋°C を描画するヘルパー
+//
+// helvB18_tf / helvB12_tf には「°」が含まれているので、
+// "23.5°C" のように単位記号付きで表示できます。
+// ================================================================
+void drawTempWithUnit(int x, int y, float temp, uint16_t color, bool bigFont)
+{
+  u8g2.setFontMode(1);   // 背景透過
+
+  if (bigFont) {
+    u8g2.setFont(u8g2_font_helvB18_tf);
+  } else {
+    u8g2.setFont(u8g2_font_helvB12_tf);
+  }
+  u8g2.setForegroundColor(color);
+
+  // ° は UTF-8 で 0xC2 0xB0
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C", temp);
+  u8g2.setCursor(x, y);
+  u8g2.print(buf);
+}
+
+// ================================================================
+// [内部ヘルパー] 雲を描画
 // ================================================================
 static void drawCloud(int cx, int cy, uint16_t color)
 {
-  // 3つの円を横に並べてもこもこした雲を表現します。
-  tft.fillCircle(cx - 8, cy + 3, 6, color);   // 左の円
-  tft.fillCircle(cx,     cy - 1, 8, color);   // 中央の円（最大・少し上）
-  tft.fillCircle(cx + 8, cy + 3, 6, color);   // 右の円
-
-  // 雲の底辺を平らにするために帯を塗りつぶします。
+  tft.fillCircle(cx - 8, cy + 3, 6, color);
+  tft.fillCircle(cx,     cy - 1, 8, color);
+  tft.fillCircle(cx + 8, cy + 3, 6, color);
   tft.fillRect(cx - 14, cy + 3, 28, 6, color);
 }
 
 // ================================================================
-// [内部ヘルパー] 太陽を描画する
-//   cx, cy : 太陽の中心座標
+// [内部ヘルパー] 太陽を描画
 // ================================================================
 static void drawSun(int cx, int cy)
 {
-  // 本体（オレンジの円）
   tft.fillCircle(cx, cy, 8, ST77XX_ORANGE);
-
-  // 光線を8方向に描画（45°刻み）
   for (int deg = 0; deg < 360; deg += 45) {
     float rad = deg * DEG_TO_RAD;
     tft.drawLine(
@@ -114,18 +127,14 @@ static void drawSun(int cx, int cy)
 }
 
 // ================================================================
-// [内部ヘルパー] 週間天気用の小さなアイコンを描画（16×12px相当）
-//   x, y : アイコン左上座標
-//   code : WMO天気コード
+// [内部ヘルパー] 小さなアイコン (16×12px) を描画
 // ================================================================
 static void drawSmallWeatherIcon(int x, int y, int code)
 {
-  // 中心座標（アイコン左上から +8, +6 が中心）
   int cx = x + 8;
   int cy = y + 6;
 
   if (code == 0) {
-    // 快晴: 小さな太陽
     tft.fillCircle(cx, cy, 4, ST77XX_ORANGE);
     for (int d = 0; d < 360; d += 45) {
       float r = d * DEG_TO_RAD;
@@ -134,13 +143,11 @@ static void drawSmallWeatherIcon(int x, int y, int code)
     }
   }
   else if (code == 1) {
-    // 概ね晴れ: 小太陽＋小雲
     tft.fillCircle(cx - 2, cy - 1, 3, ST77XX_ORANGE);
     tft.fillCircle(cx + 2, cy + 2, 4, 0xC618);
     tft.fillRect(cx - 2, cy + 2, 8, 3, 0xC618);
   }
   else if (code == 2 || code == 3) {
-    // 曇り: グレーの雲
     uint16_t c = (code == 2) ? 0xC618 : 0x8410;
     tft.fillCircle(cx - 3, cy + 1, 3, c);
     tft.fillCircle(cx + 2, cy - 1, 4, c);
@@ -148,12 +155,10 @@ static void drawSmallWeatherIcon(int x, int y, int code)
     tft.fillRect(cx - 6, cy + 1, 12, 3, c);
   }
   else if (code == 45 || code == 48) {
-    // 霧: 短い横線2本
     tft.drawFastHLine(x + 2, cy - 1, 12, 0x8410);
     tft.drawFastHLine(x + 2, cy + 3, 12, 0x8410);
   }
   else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-    // 雨: 小雲＋雨粒
     tft.fillCircle(cx, cy - 2, 4, 0x8410);
     tft.fillRect(cx - 4, cy - 2, 8, 3, 0x8410);
     int drops = (code == 51 || code == 61 || code == 80) ? 2 : 3;
@@ -162,10 +167,8 @@ static void drawSmallWeatherIcon(int x, int y, int code)
     }
   }
   else if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) {
-    // 雪: 小雲＋小さな点（雪片）
     tft.fillCircle(cx, cy - 2, 4, 0x9CF3);
     tft.fillRect(cx - 4, cy - 2, 8, 3, 0x9CF3);
-    // 雪片2個
     for (int i = 0; i < 2; i++) {
       int sx = x + 3 + i * 7;
       int sy = cy + 5;
@@ -174,20 +177,18 @@ static void drawSmallWeatherIcon(int x, int y, int code)
     }
   }
   else if (code >= 95) {
-    // 雷: 黒雲＋小稲妻
     tft.fillCircle(cx, cy - 2, 4, 0x4208);
     tft.fillRect(cx - 4, cy - 2, 8, 3, 0x4208);
     tft.fillTriangle(cx + 1, cy + 2, cx - 2, cy + 6, cx + 1, cy + 6, ST77XX_YELLOW);
     tft.fillTriangle(cx,     cy + 5, cx + 3, cy + 5, cx - 1, cy + 9, ST77XX_YELLOW);
   }
   else {
-    // 不明
     tft.drawPixel(cx, cy, ST77XX_WHITE);
   }
 }
 
 // ================================================================
-// 天気アイコン描画関数（36×36px）
+// 大きい天気アイコン描画 (36×36px)
 // ================================================================
 void drawWeatherIcon(int x, int y, int code)
 {
@@ -205,7 +206,6 @@ void drawWeatherIcon(int x, int y, int code)
     drawCloud(x + 18, y + 20, 0x8410);
   }
   else if (code == 45 || code == 48) {
-    // 霧: 横線3本
     for (int i = 0; i < 3; i++)
       tft.drawRoundRect(x + 4, y + 12 + i * 8, 28, 3, 1, 0x8410);
   }
@@ -245,63 +245,131 @@ void drawWeatherIcon(int x, int y, int code)
 }
 
 // ================================================================
-// 週間天気を AREA_WEEKLY エリアに描画する
+// 週間天気を詳細エリアに描画
 //
-// [レイアウト（1行 = 10px）]
-//   各行: [小アイコン16px] [ラベル "今日"等] [最高℃] [/] [最低℃]
-//   6日分を縦に並べます（1行あたり10px）
+// [レイアウト (1行 = 13px × 6行 = 78px、最終行に4pxの余白)]
+//   x=2  : 小アイコン (16×12px)
+//   x=22 : ラベル "今日" "明日" "月"〜"日" (japanese3 フォント)
+//   x=52 : 最高気温 (赤)
+//   x=76 : "/"
+//   x=84 : 最低気温 (水色)
+//   x=108: ° 記号
+//   x=116: C 文字
 // ================================================================
 void drawWeeklyForecast()
 {
-  if (weeklyDays == 0) return;   // データ未取得なら何もしない
+  if (weeklyDays == 0) return;
 
-  // エリア全体を背景色（黒）で塗りつぶしてから描画
-  tft.fillRect(0, AREA_WEEKLY_Y, SCREEN_W, AREA_WEEKLY_H, ST77XX_BLACK);
+  // エリア全体を黒で塗りつぶし
+  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, ST77XX_BLACK);
 
-  // 1行の高さ（AREA_WEEKLY_H / WEEKLY_DAYS = 60/6 = 10px）
-  const int rowH = AREA_WEEKLY_H / WEEKLY_DAYS;
+  const int rowH = 13;   // 1行の高さ
+
+  u8g2.setFontMode(1);   // 背景透過
 
   for (int i = 0; i < weeklyDays && i < WEEKLY_DAYS; i++)
   {
-    int rowY = AREA_WEEKLY_Y + i * rowH;   // この行のY座標
+    int rowY = AREA_DETAIL_Y + i * rowH;
 
-    // ---- 小アイコン（16×12px、行の左端）----
-    // アイコンの縦中央を行の中央に合わせます（rowH=10なので rowY+0 が中央寄り）
-    drawSmallWeatherIcon(2, rowY, weeklyForecast[i].weatherCode);
+    // ---- 小アイコン ----
+    // 行の中央に配置するため少し下げる (rowH=13 - icon_h=12 = 1px の余白)
+    drawSmallWeatherIcon(2, rowY + 0, weeklyForecast[i].weatherCode);
 
-    // ---- ラベル（"今日" / "明日" / "月" など）----
-    // setTextSize(1) = 6×8px の標準フォント
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_YELLOW);
-    tft.setCursor(20, rowY + 2);
-    tft.print(weeklyForecast[i].label);
+    // ---- ラベル (日本語、japanese3 フォント) ----
+    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setForegroundColor(ST77XX_YELLOW);
+    u8g2.setCursor(22, rowY + 11);   // ベースラインY
+    u8g2.print(weeklyForecast[i].label);
 
-    // ---- 最高気温（赤）----
-    // snprintf で小数点なし整数に変換（スペース節約）
+    // ---- 最高気温 (赤) ----
     char buf[8];
-    tft.setTextColor(0xF800);   // 赤（RGB565: R=31, G=0, B=0）
-    tft.setCursor(46, rowY + 2);
-    snprintf(buf, sizeof(buf), "%3.0f", weeklyForecast[i].tempMax);
-    tft.print(buf);
+    u8g2.setFont(u8g2_font_helvR08_tf);
+    u8g2.setForegroundColor(0xF800);
+    u8g2.setCursor(52, rowY + 10);
+    snprintf(buf, sizeof(buf), "%.0f", weeklyForecast[i].tempMax);
+    u8g2.print(buf);
 
-    // ---- 区切りスラッシュ（白）----
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(70, rowY + 2);
-    tft.print("/");
+    // ---- 区切りスラッシュ (白) ----
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(76, rowY + 10);
+    u8g2.print("/");
 
-    // ---- 最低気温（水色）----
-    tft.setTextColor(ST77XX_CYAN);
-    tft.setCursor(78, rowY + 2);
-    snprintf(buf, sizeof(buf), "%3.0f", weeklyForecast[i].tempMin);
-    tft.print(buf);
+    // ---- 最低気温 (水色) ----
+    u8g2.setForegroundColor(ST77XX_CYAN);
+    u8g2.setCursor(84, rowY + 10);
+    snprintf(buf, sizeof(buf), "%.0f", weeklyForecast[i].tempMin);
+    u8g2.print(buf);
 
-    // ---- 単位 "℃"（薄い文字で省スペース）----
-    tft.setTextColor(0x8410);   // 暗いグレー
-    tft.setCursor(102, rowY + 2);
-    tft.print("C");
+    // ---- ° 単位 ----
+    u8g2.setFont(u8g2_font_helvB08_tf);
+    u8g2.setForegroundColor(0x8410);
+    u8g2.setCursor(108, rowY + 10);
+    u8g2.print("\xC2\xB0""C");
 
-    // 行の下に薄い区切り線（最終行は除く）
+    // ---- 行間の薄い区切り線 ----
     if (i < weeklyDays - 1)
-      tft.drawFastHLine(18, rowY + rowH - 1, SCREEN_W - 18, 0x2104);
+      tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
+  }
+}
+
+// ================================================================
+// 毎時天気を詳細エリアに描画
+//
+// [レイアウト (1行 = 13px × 6行)]
+//   x=2  : 小アイコン
+//   x=22 : 時刻ラベル "今" or "14時"
+//   x=68 : 気温
+//   x=100: ° 単位
+// ================================================================
+void drawHourlyForecast()
+{
+  if (hourlyHours == 0) {
+    // データ未取得時のメッセージ
+    tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, ST77XX_BLACK);
+    u8g2.setFontMode(1);
+    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(10, AREA_DETAIL_Y + 40);
+    u8g2.print("毎時天気 取得中...");
+    return;
+  }
+
+  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, ST77XX_BLACK);
+
+  const int rowH = 13;
+
+  u8g2.setFontMode(1);
+
+  for (int i = 0; i < hourlyHours && i < HOURLY_HOURS; i++)
+  {
+    int rowY = AREA_DETAIL_Y + i * rowH;
+
+    // ---- 小アイコン ----
+    drawSmallWeatherIcon(2, rowY + 0, hourlyForecast[i].weatherCode);
+
+    // ---- 時刻ラベル ----
+    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setForegroundColor(ST77XX_YELLOW);
+    u8g2.setCursor(22, rowY + 11);
+    u8g2.print(hourlyForecast[i].label);
+
+    // ---- 気温 ----
+    char buf[8];
+    u8g2.setFont(u8g2_font_helvR08_tf);
+    if (i == 0) u8g2.setForegroundColor(ST77XX_ORANGE);   // 現在時刻のみ強調
+    else        u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(68, rowY + 10);
+    snprintf(buf, sizeof(buf), "%.1f", hourlyForecast[i].temp);
+    u8g2.print(buf);
+
+    // ---- ° 単位 ----
+    u8g2.setFont(u8g2_font_helvB08_tf);
+    u8g2.setForegroundColor(0x8410);
+    u8g2.setCursor(100, rowY + 10);
+    u8g2.print("\xC2\xB0""C");
+
+    // ---- 行間の薄い区切り線 ----
+    if (i < hourlyHours - 1)
+      tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
   }
 }

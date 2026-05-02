@@ -2,18 +2,25 @@
  * ESP32 Weather Station - 設定ファイル
  *
  * このファイルはプロジェクト全体の定数定義を一元管理しています。
- * ピン配置、画面レイアウト、色、インターバルなどの「数値」を
- * ここに集めることで、後から値を変更するのが簡単になります。
  *
- * [画面レイアウト概要 128×160px 縦向き]
+ * [今回の変更点]
+ *   - ティッカー領域を廃止（ニュースは別画面に分離）
+ *   - 詳細エリアを下端まで拡大（82px に）
+ *   - ニュース画面用の領域定数を追加
  *
- *   Y=  0〜29  : 時計＋都市名エリア（1行に統合）
- *   Y= 30〜31  : 区切り線
- *   Y= 32〜75  : 現在天気エリア（アイコン＋気温＋天気詳細を1行に）
- *   Y= 76〜77  : 区切り線
- *   Y= 78〜137 : 週間天気エリア（今日含む6日分）
- *   Y=138〜139 : 区切り線
- *   Y=140〜159 : ニューステッカーエリア（大きめフォントでスクロール）
+ * [画面レイアウト 128×160px]
+ *
+ *   ◆ WEATHER画面
+ *     Y=  0〜29  : 時計＋都市名エリア (30px)
+ *     Y= 30      : 区切り線
+ *     Y= 32〜75  : 現在天気エリア (44px)
+ *     Y= 76      : 区切り線
+ *     Y= 78〜159 : 詳細エリア (82px、週間6日 or 毎時6時間)
+ *
+ *   ◆ NEWS画面
+ *     Y=  0〜19  : タイトルバー (20px、"ニュース 3/12" 等)
+ *     Y= 20      : 区切り線
+ *     Y= 22〜159 : 本文エリア (138px、見出しをページ表示)
  */
 
 #ifndef CONFIG_H
@@ -25,97 +32,87 @@
 #include <U8g2_for_Adafruit_GFX.h>
 
 // ------------------------------------------------------------------
-// ピン配置
-// ESP32の標準SPI（VSPI）ピンを使用しています。
-// ハードウェア配線に合わせて変更してください。
+// ピン配置（ESP32の標準SPI = VSPI ピンを使用）
 // ------------------------------------------------------------------
-#define TFT_SCLK 18   // SCL (Clock)
-#define TFT_MOSI 23   // SDA (Data)
-#define TFT_RST   4   // RESET
-#define TFT_DC    2   // A0 (Data/Command)
-#define TFT_CS    5   // CS (Chip Select)
+#define TFT_SCLK 18
+#define TFT_MOSI 23
+#define TFT_RST   4
+#define TFT_DC    2
+#define TFT_CS    5
 
 // ------------------------------------------------------------------
-// ディスプレイインスタンス（main.cpp で定義、他のファイルから extern 参照）
+// ディスプレイインスタンス（main.cpp で実体定義、他は extern 参照）
 // ------------------------------------------------------------------
 extern Adafruit_ST7735 tft;
 extern U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ------------------------------------------------------------------
-// 画面レイアウト定数
-// 128x160ピクセルのディスプレイを5つのエリアに分割しています。
-//
-// [変更点]
-//   - 時計と都市名を1行に統合（旧: 時計30px + 都市24px = 54px → 新: 30px）
-//   - 現在天気エリアをコンパクトに（44px）
-//   - 週間天気エリアを新設（60px、6日分）
-//   - ティッカーエリアはそのまま下部20px
+// 画面サイズ
 // ------------------------------------------------------------------
-
-// ① 時計＋都市名エリア（1行に統合）
-#define AREA_CLOCK_Y    0    // 開始Y座標
-#define AREA_CLOCK_H   30    // 高さ（30px: 中フォントが収まるサイズ）
-
-// ② 現在天気エリア（アイコン＋気温＋天気詳細を横に並べる）
-#define AREA_WEATHER_Y  32   // 開始Y座標（区切り線の下）
-#define AREA_WEATHER_H  44   // 高さ（アイコン36px + 上下余白4px）
-
-// ③ 週間天気エリア（6日分を縦に並べる）
-#define AREA_WEEKLY_Y   78   // 開始Y座標（区切り線の下）
-#define AREA_WEEKLY_H   60   // 高さ（1行10px × 6日分）
-
-// ④ ティッカーエリア（画面最下部）
-#define AREA_TICKER_Y  140   // 開始Y座標（区切り線の下）
-#define AREA_TICKER_H   20   // 高さ
-
-// 区切り線のY座標（区切りの位置を一元管理）
-#define LINE_Y1  30    // 時計エリアの下
-#define LINE_Y2  76    // 現在天気エリアの下
-#define LINE_Y3  138   // 週間天気エリアの下
-
-// 画面幅（ST7735S 128px固定）
 #define SCREEN_W  128
 #define SCREEN_H  160
 
 // ------------------------------------------------------------------
-// 背景色 (RGB565形式)
-// 天気ごとに異なる背景色を適用して、視覚的に分かりやすくしています。
-// RGB565 は R(5bit) G(6bit) B(5bit) を1つの16bit値に詰めた形式です。
+// WEATHER画面のレイアウト
+//
+// ティッカー領域を廃止し、詳細エリアを画面下端まで拡張。
+// 1行の高さは AREA_DETAIL_H / WEEKLY_DAYS = 82/6 ≒ 13.7px。
+// 整数で扱うため 13px として最終行に少し余裕を持たせます。
 // ------------------------------------------------------------------
-#define COL_BG_CLEAR    0x0952   // 快晴: 深い青（#1a2a4a）
-#define COL_BG_RAIN     0x0926   // 雨: 暗い青灰（#1a2535）
-#define COL_BG_SNOW     0x0E46   // 雪: 青みがかった暗い色（#1c2535）
-#define COL_BG_THUNDER  0x08A5   // 雷: 暗い紫紺（#1a1a2e）
-#define COL_BG_FOG      0x0904   // 霧: 暗いグレー（#1e2020）
-#define COL_BG_CLOUDY   0x08E4   // 曇り: 暗い青灰（#1a1e22）
-#define COL_BG_CLOCK    0x00A4   // 時計エリア: 濃い青（#0d1f3c相当）
+#define AREA_CLOCK_Y      0
+#define AREA_CLOCK_H     30
+
+#define AREA_WEATHER_Y   32
+#define AREA_WEATHER_H   44
+
+#define AREA_DETAIL_Y    78
+#define AREA_DETAIL_H    82
+
+#define LINE_Y1   30
+#define LINE_Y2   76
+
+// ------------------------------------------------------------------
+// NEWS画面のレイアウト（新規）
+// ------------------------------------------------------------------
+#define NEWS_TITLE_Y      0
+#define NEWS_TITLE_H     20
+#define NEWS_LINE_Y      20
+#define NEWS_BODY_Y      22
+#define NEWS_BODY_H     (SCREEN_H - NEWS_BODY_Y)
+
+// ------------------------------------------------------------------
+// 背景色 (RGB565形式)
+// ------------------------------------------------------------------
+#define COL_BG_CLEAR    0x0952
+#define COL_BG_RAIN     0x0926
+#define COL_BG_SNOW     0x0E46
+#define COL_BG_THUNDER  0x08A5
+#define COL_BG_FOG      0x0904
+#define COL_BG_CLOUDY   0x08E4
+#define COL_BG_CLOCK    0x00A4
+#define COL_BG_NEWS     0x10A2   // ニュース画面: 暗い紫
+#define COL_BG_NEWSBAR  0x4208   // ニュースタイトルバー: 中グレー
 
 // ------------------------------------------------------------------
 // タイマー間隔 (ミリ秒)
-//
-// ノンブロッキング処理のための時間間隔定数です。
-// delay() を使わず、millis() の差分でタイミングを制御しています。
-//
-// [変更点]
-//   - clockInterval を廃止（秒表示をやめたため 1 分単位でよい）
-//   - clockMinuteInterval を新設（1分ごとに HH:MM を更新）
-//   - tickerInterval は ticker.h に移動（ティッカー固有の設定のため）
 // ------------------------------------------------------------------
 
-// 天気データ（現在天気）の取得間隔: 15分
-// Open-Meteo API の無料プランではレート制限があるため、短くしすぎ厳禁。
+// 現在天気の取得間隔: 15分
 const unsigned long fetchInterval       = 15UL * 60UL * 1000UL;
 
-// 週間天気データの取得間隔: 1時間
-// 週間予報は数時間単位でしか変わらないため、現在天気より長めに設定。
+// 週間天気の取得間隔: 1時間
 const unsigned long weeklyFetchInterval = 60UL * 60UL * 1000UL;
 
-// 都市切替間隔: 20秒
-// 週間天気も表示するようになったため、旧15秒より少し長くしました。
+// 毎時天気の取得間隔: 30分
+const unsigned long hourlyFetchInterval = 30UL * 60UL * 1000UL;
+
+// 全国巡回モードでの都市切替間隔: 20秒
 const unsigned long citySwitchInterval  = 20000UL;
 
 // 時計更新間隔: 30秒
-// 秒表示をやめたので 30 秒ごとの更新で十分（差分描画なので余裕あり）。
 const unsigned long clockInterval       = 30000UL;
+
+// ニュース画面の見出し自動切替間隔: 5秒
+const unsigned long newsPageInterval    = 5000UL;
 
 #endif // CONFIG_H

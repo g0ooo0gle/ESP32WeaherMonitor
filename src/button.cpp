@@ -1,52 +1,210 @@
 /**
  * ESP32 Weather Station - 物理ボタン制御 実装
  *
- * [このファイルで実装すること]
- * 1. setupButtons()  : GPIO ピンを INPUT_PULLUP で初期化
- * 2. updateButtons() : 2つのボタンを毎フレームチェックし、
- *    - BTN_MODE_PIN が押された → 表示モードを切り替える（天気↔ティッカー）
- *    - BTN_CITY_PIN が押された → 次の都市に手動で切り替える
+ * [このファイルでやること]
+ *   1. setupButtons()   GPIO を INPUT_PULLUP で初期化
+ *   2. updateButtons()  毎ループ呼ばれ、両ボタンの短押し/長押しを判定
  *
- * [チャタリング除去の仕組み]
- * ボタンは「HIGH→LOW に変わった瞬間（押し始め）」を1回だけ検出します。
- * 前回の状態（prevStateXxx）と今回の状態を比較して「立ち下がりエッジ」を検出。
- * さらに lastPressXxx から BTN_DEBOUNCE_MS(50ms) 経過していないと無視します。
- * これで同じボタン押しが2回以上登録される誤動作を防ぎます。
+ * [短押しと長押しの判定方法]
+ *   ・ボタンが押された瞬間の時刻を記録 (pressStart)
+ *   ・押している間ずっと、現在時刻との差を見る
+ *   ・500ms を超えた瞬間に「長押し」フラグを立てて長押しアクション実行
+ *   ・離した瞬間、長押しフラグが立っていなければ短押しアクション
+ *   ・1回の押下で「長押し」と「短押し」が両方発火することはありません
  */
 
 #include "button.h"
-#include "display.h"   // cityIndex, drawWeatherInfo(), drawStaticElements() を使うため
-#include "network.h"   // updateWeather() を使うため
-#include "ticker.h"    // updateTicker(), tickerScrollX を使うため
-#include "cities.h"    // cityCount を使うため
+#include "display.h"
+#include "network.h"
+#include "ticker.h"
+#include "cities.h"
 
 // ================================================================
-// 現在の表示モードの実体定義（button.h で extern 宣言済み）
-// デフォルトは通常の天気表示（MODE_WEATHER）です。
+// 状態変数の実体定義
 // ================================================================
-DisplayMode currentMode = DisplayMode::WEATHER;
+Screen      currentScreen = Screen::WEATHER;        // 起動時は天気画面
+DisplayMode currentMode   = DisplayMode::ALL_CITIES; // 起動時は全国巡回
+SubView     currentSub    = SubView::WEEKLY;         // 起動時は週間表示
 
 // ================================================================
-// チャタリング除去用の内部状態変数（このファイルだけで使う）
+// 内部状態（このファイルだけで使用）
 // ================================================================
-static int  prevModeBtn  = HIGH;   // 前フレームのモードボタン状態（初期値 = 押されていない）
-static int  prevCityBtn  = HIGH;   // 前フレームの都市ボタン状態
-static unsigned long lastPressModeBtn = 0;   // 最後にモードボタンが反応した時刻
-static unsigned long lastPressCityBtn = 0;   // 最後に都市ボタンが反応した時刻
+static int  prevModeBtn = HIGH;
+static int  prevCityBtn = HIGH;
+
+// MODE ボタン用
+static unsigned long modePressStart = 0;
+static bool          modeLongFired  = false;
+
+// CITY ボタン用
+static unsigned long cityPressStart = 0;
+static bool          cityLongFired  = false;
+
+// 直前のボタンアクション完了時刻（チャタリング再発火防止）
+static unsigned long lastModeAction = 0;
+static unsigned long lastCityAction = 0;
 
 // ================================================================
-// ボタンの GPIO ピンを初期化
-// INPUT_PULLUP = ボタン未押下時は HIGH（プルアップ抵抗内蔵で常に 3.3V）
-//               ボタン押下時は LOW（ボタンが GND に接続するため電圧が下がる）
+// MODE 短押し: 画面トグル
+// ================================================================
+static void modeShortPress()
+{
+  if (currentScreen == Screen::WEATHER) {
+    currentScreen = Screen::NEWS;
+    Serial.println(F("[Button] MODE短押し: 天気 → ニュース画面"));
+    drawNewsScreen();
+  } else {
+    currentScreen = Screen::WEATHER;
+    Serial.println(F("[Button] MODE短押し: ニュース → 天気画面"));
+    drawWeatherInfo();
+  }
+}
+
+// ================================================================
+// MODE 長押し: 天気画面で全国 ⇄ 1都市 を切替
+// ニュース画面では何もしない
+// ================================================================
+static void modeLongPress()
+{
+  if (currentScreen != Screen::WEATHER) {
+    Serial.println(F("[Button] MODE長押し: ニュース画面では無効"));
+    return;
+  }
+
+  if (currentMode == DisplayMode::ALL_CITIES) {
+    currentMode = DisplayMode::SINGLE;
+    Serial.println(F("[Button] MODE長押し: 全国 → 1都市詳細"));
+
+    // 1都市モードに入ったとき、現在のサブビューに合わせてデータ取得
+    if (currentSub == SubView::WEEKLY) updateWeeklyForecast();
+    else                                updateHourlyForecast();
+  } else {
+    currentMode = DisplayMode::ALL_CITIES;
+    Serial.println(F("[Button] MODE長押し: 1都市詳細 → 全国巡回"));
+  }
+
+  drawWeatherInfo();
+}
+
+// ================================================================
+// CITY 短押し: 画面とモードに応じてアクション分岐
+// ================================================================
+static void cityShortPress()
+{
+  if (currentScreen == Screen::NEWS) {
+    // ニュース画面 → 次の見出しへ
+    Serial.println(F("[Button] CITY短押し: 次の見出し"));
+    nextNewsPage();
+    return;
+  }
+
+  // WEATHER画面
+  if (currentMode == DisplayMode::ALL_CITIES) {
+    // 全国モード → 次の都市
+    cityIndex = (cityIndex + 1) % cityCount;
+    Serial.printf("[Button] CITY短押し: 都市 → %s\n", cities[cityIndex].name);
+    updateWeather();
+    drawWeatherInfo();
+  } else {
+    // 1都市モード → 週間 ⇄ 毎時 をトグル
+    if (currentSub == SubView::WEEKLY) {
+      currentSub = SubView::HOURLY;
+      Serial.println(F("[Button] CITY短押し: 週間 → 毎時"));
+      updateHourlyForecast();
+    } else {
+      currentSub = SubView::WEEKLY;
+      Serial.println(F("[Button] CITY短押し: 毎時 → 週間"));
+    }
+    drawDetailArea();
+  }
+}
+
+// ================================================================
+// CITY 長押し: 画面と状況に応じてアクション分岐
+// ================================================================
+static void cityLongPress()
+{
+  if (currentScreen == Screen::NEWS) {
+    // ニュース画面 → 前の見出しへ
+    Serial.println(F("[Button] CITY長押し: 前の見出し"));
+    prevNewsPage();
+    return;
+  }
+
+  // WEATHER画面 + 1都市モード時のみ都市送り（サブビューは保持）
+  if (currentMode == DisplayMode::SINGLE) {
+    cityIndex = (cityIndex + 1) % cityCount;
+    Serial.printf("[Button] CITY長押し: 都市 → %s\n", cities[cityIndex].name);
+    updateWeather();
+    if (currentSub == SubView::WEEKLY) updateWeeklyForecast();
+    else                                updateHourlyForecast();
+    drawWeatherInfo();
+  }
+  // 全国モード時の長押しは無効（短押しの自動切替で十分なため）
+}
+
+// ================================================================
+// ボタン GPIO ピンの初期化
 // ================================================================
 void setupButtons()
 {
-  // 両方のボタンをプルアップ付き入力モードで初期化
   pinMode(BTN_MODE_PIN, INPUT_PULLUP);
   pinMode(BTN_CITY_PIN, INPUT_PULLUP);
-
-  Serial.printf("[Button] ボタン初期化完了: MODE=GPIO%d, CITY=GPIO%d\n",
+  Serial.printf("[Button] 初期化完了: MODE=GPIO%d, CITY=GPIO%d\n",
                 BTN_MODE_PIN, BTN_CITY_PIN);
+}
+
+// ================================================================
+// [内部ヘルパー] ボタンの押下/離脱を判定し、短押し/長押しを発火する
+//   汎用的に書くと MODE/CITY で同じロジックを共有できます。
+//
+//   引数:
+//     btnState        : 今回読み取ったピン状態 (HIGH/LOW)
+//     prevState       : 前回のピン状態 (参照渡しで更新)
+//     pressStart      : 押し始め時刻 (参照)
+//     longFired       : 長押し発火済みフラグ (参照)
+//     lastAction      : 直前のアクション時刻 (チャタリング防止)
+//     onShortPress    : 短押し時に呼ぶコールバック
+//     onLongPress     : 長押し時に呼ぶコールバック
+//     now             : 現在時刻 millis()
+// ================================================================
+static void handleButton(int btnState, int &prevState,
+                         unsigned long &pressStart, bool &longFired,
+                         unsigned long &lastAction,
+                         void (*onShortPress)(), void (*onLongPress)(),
+                         unsigned long now)
+{
+  // 押し始め (HIGH→LOW)
+  if (prevState == HIGH && btnState == LOW) {
+    if (now - lastAction >= BTN_DEBOUNCE_MS) {
+      pressStart = now;
+      longFired  = false;
+    }
+  }
+
+  // 押し続けている間に長押しを検出
+  if (btnState == LOW && !longFired && pressStart != 0) {
+    if (now - pressStart >= BTN_LONGPRESS_MS) {
+      longFired  = true;
+      lastAction = now;
+      onLongPress();
+    }
+  }
+
+  // 離した瞬間 (LOW→HIGH)
+  if (prevState == LOW && btnState == HIGH) {
+    if (!longFired && pressStart != 0) {
+      // 押下時間が短すぎなければ短押しとみなす
+      if (now - pressStart >= BTN_DEBOUNCE_MS) {
+        lastAction = now;
+        onShortPress();
+      }
+    }
+    pressStart = 0;
+    longFired  = false;
+  }
+
+  prevState = btnState;
 }
 
 // ================================================================
@@ -56,81 +214,16 @@ void updateButtons()
 {
   unsigned long now = millis();
 
-  // -------------------------------------------------------------------
-  // ① モード切替ボタン（BTN_MODE_PIN）のチェック
-  //
-  // 動作: 押すたびに  WEATHER → TICKER → WEATHER → ... とトグルします。
-  // -------------------------------------------------------------------
-  int modeBtnState = digitalRead(BTN_MODE_PIN);   // 現在のピン状態を読む
-
-  // 「前回 HIGH（未押下）で今回 LOW（押下）」 = 立ち下がりエッジを検出
-  if (prevModeBtn == HIGH && modeBtnState == LOW)
-  {
-    // チャタリング除去: 前回反応から BTN_DEBOUNCE_MS(50ms) 以上経っていれば有効
-    if (now - lastPressModeBtn >= BTN_DEBOUNCE_MS)
-    {
-      lastPressModeBtn = now;   // 反応時刻を更新
-
-      // 現在のモードに応じて次のモードへ切り替え
-      if (currentMode == DisplayMode::WEATHER)
-      {
-        currentMode = DisplayMode::TICKER;
-        Serial.println(F("[Button] モード切替 → TICKER"));
-
-        // ティッカーモードに切り替えたら画面を一旦黒で塗りつぶす
-        // （天気情報の残像が残らないように）
-        tft.fillScreen(ST77XX_BLACK);
-
-        // ティッカーのスクロール位置をリセットして先頭から流し直す
-        tickerScrollX = 0;
-      }
-      else
-      {
-        currentMode = DisplayMode::WEATHER;
-        Serial.println(F("[Button] モード切替 → WEATHER"));
-
-        // 天気モードに戻ったら静的レイアウト（仕切り線など）を再描画
-        drawStaticElements();
-
-        // 天気情報も即座に再描画する
-        drawWeatherInfo();
-      }
-    }
-  }
-  prevModeBtn = modeBtnState;   // 今回の状態を次回の「前回状態」として保存
-
-  // -------------------------------------------------------------------
-  // ② 都市切替ボタン（BTN_CITY_PIN）のチェック
-  //
-  // 動作: 押すたびに次の都市に進みます（最後まで来たら最初に戻る）。
-  //       天気モードのときのみ有効にします（ティッカーモード中は無視）。
-  // -------------------------------------------------------------------
+  int modeBtnState = digitalRead(BTN_MODE_PIN);
   int cityBtnState = digitalRead(BTN_CITY_PIN);
 
-  // 立ち下がりエッジ検出（モードボタンと同じ仕組み）
-  if (prevCityBtn == HIGH && cityBtnState == LOW)
-  {
-    if (now - lastPressCityBtn >= BTN_DEBOUNCE_MS)
-    {
-      lastPressCityBtn = now;
+  // MODE ボタン
+  handleButton(modeBtnState, prevModeBtn,
+               modePressStart, modeLongFired, lastModeAction,
+               modeShortPress, modeLongPress, now);
 
-      // 天気表示モードのときだけ都市切替を受け付ける
-      if (currentMode == DisplayMode::WEATHER)
-      {
-        // 都市インデックスを1つ進める（最後→最初のループは % で実現）
-        cityIndex = (cityIndex + 1) % cityCount;
-        Serial.printf("[Button] 都市手動切替 → %s\n", cities[cityIndex].name);
-
-        // 新しい都市の天気を即座に取得して表示
-        updateWeather();
-        drawWeatherInfo();
-      }
-      else
-      {
-        // ティッカーモード中は都市切替を無視（デバッグ用にログだけ出す）
-        Serial.println(F("[Button] ティッカーモード中のため都市切替を無視しました。"));
-      }
-    }
-  }
-  prevCityBtn = cityBtnState;
+  // CITY ボタン
+  handleButton(cityBtnState, prevCityBtn,
+               cityPressStart, cityLongFired, lastCityAction,
+               cityShortPress, cityLongPress, now);
 }

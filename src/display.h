@@ -1,11 +1,12 @@
 /**
- * ESP32 Weather Station - 描画機能
+ * ESP32 Weather Station - 描画機能 ヘッダ
  *
- * [変更点]
- *   - 時計＋都市名を1行に統合（drawClockCity()）
- *   - 現在天気エリアをコンパクト化（アイコン＋気温＋詳細を1行に）
- *   - 週間天気エリアの描画は weather.cpp の drawWeeklyForecast() が担当
- *   - DisplayMode に WEEKLY を追加
+ * [今回の変更点]
+ *   - drawNewsScreen() / drawWeatherScreen() を新設
+ *     画面切替時にどちらかを呼ぶ。
+ *   - 旧 drawWeatherInfo() は drawWeatherScreen() の別名として残します
+ *     (既存コードからの呼び出しを変えなくてよいように)
+ *   - 日本語フォントは weather.cpp と同じく japanese3 系で統一
  */
 
 #ifndef DISPLAY_H
@@ -15,30 +16,31 @@
 #include "weather.h"
 
 // ------------------------------------------------------------------
-// 状態管理変数（display.cpp で実体定義）
+// 状態管理変数
 // ------------------------------------------------------------------
-extern int   cityIndex;           // 現在表示中の都市インデックス
-extern float currentTemp;         // 現在の気温
-extern int   currentWeatherCode;  // 現在のWMO天気コード
+extern int   cityIndex;
+extern float currentTemp;
+extern int   currentWeatherCode;
 
 // ------------------------------------------------------------------
-// 差分描画キャッシュ（前回描画時の値を保持）
+// 差分描画キャッシュ
 // ------------------------------------------------------------------
-extern char  prevTimeStr[16];     // 前回描画した時刻文字列（HH:MM）
-extern int   prevCityIndex;       // 前回の都市インデックス（-1=未描画）
-extern float prevTemp;            // 前回の気温（-999=未描画）
-extern int   prevWeatherCode;     // 前回の天気コード（-1=未描画）
+extern char  prevTimeStr[16];
+extern int   prevCityIndex;
+extern float prevTemp;
+extern int   prevWeatherCode;
 
 // ------------------------------------------------------------------
-// タイマー管理変数（loop() で millis() 比較に使用）
+// タイマー管理変数
 // ------------------------------------------------------------------
-extern unsigned long lastFetchAttempt;     // 現在天気 API の前回試行時刻
-extern unsigned long lastWeeklyFetch;      // 週間天気 API の前回試行時刻
-extern unsigned long lastCitySwitch;       // 都市切替の前回実行時刻
-extern unsigned long lastClockUpdate;      // 時計描画の前回実行時刻
+extern unsigned long lastFetchAttempt;
+extern unsigned long lastWeeklyFetch;
+extern unsigned long lastHourlyFetch;
+extern unsigned long lastCitySwitch;
+extern unsigned long lastClockUpdate;
 
 // ------------------------------------------------------------------
-// 指定エリアを指定色で塗りつぶすヘルパー
+// エリア塗りつぶしヘルパー
 // ------------------------------------------------------------------
 inline void clearArea(int y, int h, uint16_t color = ST77XX_BLACK)
 {
@@ -46,29 +48,28 @@ inline void clearArea(int y, int h, uint16_t color = ST77XX_BLACK)
 }
 
 // ------------------------------------------------------------------
-// 時計＋都市名エリアを描画（1行に統合）
-// 左側: HH:MM（秒なし）、右側: 都市名
-// 差分描画対応: 分が変わった時だけ再描画します。
+// WEATHER画面の各エリア描画関数
 // ------------------------------------------------------------------
+
+/** 時計＋都市名 */
 void drawClockCity();
 
-// ------------------------------------------------------------------
-// 現在天気エリアを描画（アイコン＋気温＋天気詳細を横並びに）
-// アイコン: 左端 36×36px
-// 気温: 大きめフォント（数字のみ、°Cは小さく）
-// 天気詳細: 気温の下に小さく1行
-// ------------------------------------------------------------------
+/** 現在天気エリア (アイコン+気温+詳細) */
 void drawCurrentWeather();
 
-// ------------------------------------------------------------------
-// 天気情報をまとめて更新（都市切替・API更新時に呼ぶ）
-// 背景塗りつぶし → drawClockCity → drawCurrentWeather → キャッシュ更新
-// ------------------------------------------------------------------
+/** 詳細エリア (週間 or 毎時を切替) */
+void drawDetailArea();
+
+/**
+ * WEATHER画面全体を再描画
+ * 旧名 drawWeatherInfo() のまま（既存呼び出し維持）
+ */
 void drawWeatherInfo();
 
-// ------------------------------------------------------------------
-// 起動時に一度だけ呼ぶ静的要素の描画（区切り線など）
-// ------------------------------------------------------------------
+/** drawWeatherInfo の別名（読みやすさ優先で main から呼ぶ用） */
+inline void drawWeatherScreen() { drawWeatherInfo(); }
+
+/** 起動時に1回だけ呼ぶ静的要素描画 (区切り線など) */
 void drawStaticElements();
 
 #endif // DISPLAY_H

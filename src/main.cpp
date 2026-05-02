@@ -2,48 +2,41 @@
  * ESP32 Weather Station
  * ESP32 + ST7735S 1.8inch Display Project
  *
+ * [今回の変更点 (画面分離)]
+ *   - WEATHER画面と NEWS画面を完全分離
+ *   - MODEボタン短押しで画面切替
+ *   - 各画面はそれぞれ独立して描画され、互いに干渉しません
+ *   - 天気更新・RSS 取得は両画面で並行動作 (Core 0/1 両方使用)
+ *
  * [機能一覧]
- * 1. WiFiManagerによる自動接続（初回はAPモードでスマホから設定）
- * 2. NTPによる分単位の正確な時刻表示（HH:MM形式）
- * 3. Open-Meteo APIによる日本全47都道府県庁所在地の巡回
- * 4. 全天気コード(WMO)の完全日本語化
- * 5. 天気コードに応じたアイコン表示（プリミティブ描画）
- * 6. 気象状況に応じた背景色の動的変更
- * 7. 週間天気予報（6日分の最高・最低気温＋天気アイコン）
- * 8. NHKニュースRSSをスクロール表示するティッカー機能
- * 9. 物理ボタンによるモード切替・都市切替
+ *   1. WiFiManager 自動接続 (初回はAPモードでスマホ設定)
+ *   2. NTP分単位の時刻表示
+ *   3. Open-Meteo API: 現在天気/週間/毎時を取得
+ *   4. WMO天気コードの日本語化＋アイコン
+ *   5. 全国巡回モード: 47都道府県を20秒ごとに自動切替
+ *   6. 1都市詳細モード: 1都市固定、週間/毎時切替＆手動都市送り
+ *   7. NHKニュース画面: 1見出し全画面ページ表示、5秒で次へ
+ *   8. 物理ボタン2個 (短押し/長押し) で全機能を操作
  *
- * [接続メモ（ディスプレイ）]
- * VCC    -> 3.3V
- * GND    -> GND
- * CS     -> GPIO 5
- * RESET  -> GPIO 4
- * D/C(A0)-> GPIO 2
- * SDA    -> GPIO 23
- * SCLK   -> GPIO 18
- * BL(LED)-> 3.3V (バックライト常時オン)
+ * [接続メモ (ディスプレイ)]
+ *   VCC -> 3.3V / GND -> GND
+ *   CS  -> GPIO 5 / RESET -> GPIO 4 / D/C(A0) -> GPIO 2
+ *   SDA -> GPIO 23 / SCLK -> GPIO 18
+ *   BL  -> 3.3V (バックライト常時オン)
  *
- * [接続メモ（ボタン）]
- * モード切替ボタン: GPIO 0  ← → GND（内部プルアップ使用）
- * 都市切替ボタン  : GPIO 35 ← → GND（内部プルアップ使用）
+ * [接続メモ (ボタン)]
+ *   MODE: GPIO 0  ← → GND  (画面切替/モード切替)
+ *   CITY: GPIO 35 ← → GND  (都市送り/サブビュー切替/見出し送り)
  *
- * ============================================================
- * ファイル構成
- * ============================================================
- * config.h      : ピン配置、レイアウト定数、色、インターバルの全定義
- * cities.h/cpp  : 47都道府県庁所在地＋地方ブロック定義
- * weather.h/cpp : WMOコード変換、背景色判定、天気アイコン、週間天気描画
- * display.h/cpp : 画面描画（時計＋都市1行、現在天気、週間天気呼び出し）
- * network.h/cpp : WiFi、NTP、現在天気・週間天気のAPI通信
- * ticker.h/cpp  : NHKニュースRSS取得＆高速スクロール描画
- * button.h/cpp  : 物理ボタン制御（デバウンス・モード切替）
- * main.cpp      : setup() と loop() のみ（ここ）
- * ============================================================
- *
- * [将来の拡張予定]
- * - 地方ブロック別フィルタ表示（cities.h の RegionBlock を使用）
- * - Web設定画面（WiFiManager のカスタムパラメータ機能で実装予定）
- *   → 都市表示間隔、表示地方の絞り込み、RSS URL 変更などを設定保存
+ * [ファイル構成]
+ *   config.h      : ピン/レイアウト/色/インターバル定義
+ *   cities.h/cpp  : 47都道府県庁所在地データ
+ *   weather.h/cpp : WMO変換/背景色/アイコン/週間&毎時描画
+ *   display.h/cpp : 天気画面の描画
+ *   network.h/cpp : WiFi/NTP/天気API
+ *   ticker.h/cpp  : ニュース画面 (描画＋Core0タスク)
+ *   button.h/cpp  : ボタン処理 (短押し/長押し)
+ *   main.cpp      : setup() と loop()
  */
 
 #include "config.h"
@@ -54,12 +47,12 @@
 #include "ticker.h"
 #include "button.h"
 
-// ディスプレイインスタンスの実体（他のファイルは extern で参照）
+// ディスプレイインスタンスの実体
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ============================================================
-// setup() - 起動時に一度だけ実行
+// setup() - 起動時に1回実行
 // ============================================================
 void setup()
 {
@@ -68,51 +61,48 @@ void setup()
 
   // ---- ディスプレイ初期化 ----
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(0);             // 縦向き 128×160px
+  tft.setRotation(0);
   tft.fillScreen(ST77XX_BLACK);
   u8g2.begin(tft);
+  u8g2.setFontMode(1);   // デフォルトで透過モード
 
   // ---- WiFi接続 ----
-  // setupWiFi() は network.cpp に実装。
-  // 未設定時は "ESP32_Weather_Config" という AP を起動し、
-  // スマホのブラウザ（192.168.4.1）から SSID/パスワードを設定できます。
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setBackgroundColor(ST77XX_BLACK);
   u8g2.setCursor(0, 80);
   u8g2.print("WiFi setup...");
 
-  if (!setupWiFi())
-  {
+  if (!setupWiFi()) {
     Serial.println(F("[Setup] WiFi接続失敗。再起動します。"));
     ESP.restart();
   }
 
   tft.fillScreen(ST77XX_BLACK);
   u8g2.setCursor(0, 80);
-  u8g2.print("WiFi接続完了！");
+  u8g2.print("WiFi接続完了!");
   delay(400);
 
-  // ---- 時刻同期（NTP）----
+  // ---- 時刻同期 ----
   tft.fillScreen(ST77XX_BLACK);
   u8g2.setCursor(0, 80);
   u8g2.print("時刻同期中...");
   setupNTP();
   Serial.println(F("[Setup] NTP configured."));
 
-  // ---- 静的レイアウト描画（区切り線など）----
+  // ---- 静的レイアウト ----
   drawStaticElements();
 
   // ---- ボタン初期化 ----
-  // WiFi接続後に初期化することで GPIO 0（EN ボタン）との干渉を回避します。
   setupButtons();
 
   // ---- タイマー初期化 ----
-  // lastFetchAttempt を「fetchInterval 分前」に設定することで、
-  // setup 完了直後から即座に天気取得が走ります。
-  lastFetchAttempt = millis() - fetchInterval;
-  lastWeeklyFetch  = millis() - weeklyFetchInterval;
-  lastCitySwitch   = millis();
-  lastClockUpdate  = millis();
+  unsigned long t0 = millis();
+  lastFetchAttempt = t0 - fetchInterval;
+  lastWeeklyFetch  = t0 - weeklyFetchInterval;
+  lastHourlyFetch  = t0 - hourlyFetchInterval;
+  lastCitySwitch   = t0;
+  lastClockUpdate  = t0;
 
   // ---- 初回データ取得と描画 ----
   Serial.println(F("[Setup] 初回天気データ取得..."));
@@ -120,89 +110,114 @@ void setup()
   updateWeeklyForecast();
   drawWeatherInfo();
 
-  // ---- ティッカー初期化（NHK RSS 初回取得）----
-  // WiFi・NTP の完了後に実行します。RSS 取得に数秒かかる場合があります。
-  Serial.println(F("[Setup] ティッカー初期化..."));
-  setupTicker();
+  // ---- ニュース機能初期化 (Core 0 タスク起動) ----
+  Serial.println(F("[Setup] ニュース機能初期化..."));
+  setupNews();
 
   Serial.println(F("[Setup] 完了。loop() に移行。"));
+  Serial.printf("[Setup] 空きヒープ: %u bytes\n", ESP.getFreeHeap());
 }
 
 // ============================================================
 // loop() - 起動後に繰り返し実行
 //
-// ノンブロッキング設計のため delay() は使いません。
-// millis() の差分で各タスクのタイミングを独立して管理します。
+// [実行方針]
+//   ・ボタン処理は両画面共通で毎ループ実行
+//   ・天気データの更新は両画面とも継続 (画面に出してなくても裏で更新)
+//   ・描画は currentScreen に応じて分岐
 //
-// [実行タスク一覧]
-//   ① ボタン確認     : 毎ループ（デバウンスは button.cpp 内で処理）
-//   ② 時計＋都市更新  : 30秒ごと（分が変わった時だけ実際に再描画）
-//   ③ ティッカー     : 20msごとにスクロール / 5分ごとにRSS再取得
-//   ④ 都市自動切替   : 20秒ごと（天気モード時のみ）
-//   ⑤ 現在天気更新   : 15分ごとにAPI取得
-//   ⑥ 週間天気更新   : 1時間ごとにAPI取得
+// [画面別の処理]
+//   ◆ WEATHER画面
+//     - 時計更新 (30秒ごとに描画)
+//     - 都市自動切替 (全国モード時のみ、20秒ごと)
+//     - 現在天気更新 (15分ごと)
+//     - 週間/毎時の更新 (1時間 / 30分)
+//
+//   ◆ NEWS画面
+//     - 自動ページ切替 (5秒ごとに次の見出し)
+//     - (天気の更新タイマーは裏で動き続けます。
+//        画面復帰時に最新データが表示されます)
 // ============================================================
 void loop()
 {
   unsigned long now = millis();
 
-  // ① ボタン確認（毎ループ）
+  // ---- ボタン処理 (両画面共通) ----
   updateButtons();
 
-  if (currentMode == DisplayMode::WEATHER)
+  // ====================================================================
+  // 画面ごとの描画処理
+  // ====================================================================
+  if (currentScreen == Screen::WEATHER)
   {
-    // ② 時計＋都市更新
-    // drawClockCity() 内で差分チェックするため、頻繁に呼んでもコストは低い。
-    if (now - lastClockUpdate >= clockInterval)
-    {
+    // 時計更新 (差分描画なので頻繁に呼んでもコストは低い)
+    if (now - lastClockUpdate >= clockInterval) {
       drawClockCity();
       lastClockUpdate = now;
     }
+  }
+  else  // Screen::NEWS
+  {
+    // 5秒ごとに次の見出しへ自動切替
+    updateNewsAutoPaging();
+  }
 
-    // ④ 都市自動切替（20秒ごと）
-    if (now - lastCitySwitch >= citySwitchInterval)
-    {
+  // ====================================================================
+  // データ更新 (画面に関係なく裏で動かす)
+  // → ニュース画面から戻ったときに最新データが表示される
+  // ====================================================================
+
+  // 全国モード時のみ都市自動切替
+  if (currentMode == DisplayMode::ALL_CITIES) {
+    if (now - lastCitySwitch >= citySwitchInterval) {
       cityIndex = (cityIndex + 1) % cityCount;
       Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
 
-      // 新しい都市の現在天気と週間天気を取得して全体を再描画
       updateWeather();
       updateWeeklyForecast();
-      drawWeatherInfo();
 
-      prevCityIndex  = cityIndex;
-      lastCitySwitch = now;
-      // 都市切替後は両タイマーもリセット（過剰な連続API呼び出しを防ぐ）
+      // WEATHER画面表示中なら即時描画、NEWS画面なら描画スキップ
+      if (currentScreen == Screen::WEATHER) {
+        drawWeatherInfo();
+      }
+
+      prevCityIndex    = cityIndex;
+      lastCitySwitch   = now;
       lastFetchAttempt = now;
       lastWeeklyFetch  = now;
     }
+  }
 
-    // ⑤ 現在天気の定期更新（15分ごと）
-    if (now - lastFetchAttempt >= fetchInterval)
-    {
-      Serial.println(F("[Loop] 現在天気定期更新..."));
-      bool changed = updateWeather();
-      if (changed) drawWeatherInfo();
-      lastFetchAttempt = now;
+  // 現在天気の定期更新 (15分ごと)
+  if (now - lastFetchAttempt >= fetchInterval) {
+    Serial.println(F("[Loop] 現在天気定期更新..."));
+    bool changed = updateWeather();
+    if (changed && currentScreen == Screen::WEATHER) {
+      drawWeatherInfo();
     }
+    lastFetchAttempt = now;
+  }
 
-    // ⑥ 週間天気の定期更新（1時間ごと）
-    // 週間予報は数時間単位でしか変わらないため、更新頻度は低めに設定。
-    if (now - lastWeeklyFetch >= weeklyFetchInterval)
-    {
+  // 詳細データの定期更新
+  if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
+    // 1都市モード×毎時表示中: 30分ごとに毎時データ
+    if (now - lastHourlyFetch >= hourlyFetchInterval) {
+      Serial.println(F("[Loop] 毎時天気定期更新..."));
+      bool changed = updateHourlyForecast();
+      if (changed && currentScreen == Screen::WEATHER) {
+        drawDetailArea();
+      }
+      lastHourlyFetch = now;
+    }
+  } else {
+    // それ以外: 1時間ごとに週間データ
+    if (now - lastWeeklyFetch >= weeklyFetchInterval) {
       Serial.println(F("[Loop] 週間天気定期更新..."));
       bool changed = updateWeeklyForecast();
-      if (changed) drawWeeklyForecast();
+      if (changed && currentScreen == Screen::WEATHER) {
+        drawDetailArea();
+      }
       lastWeeklyFetch = now;
     }
-
-    // ③ ティッカースクロール（天気モードでも常時表示）
-    updateTicker();
-  }
-  else if (currentMode == DisplayMode::TICKER)
-  {
-    // ティッカーモード: ティッカーのみ動かす
-    // 将来的にはここでニュースを全画面表示する専用描画関数を呼ぶ予定。
-    updateTicker();
   }
 }

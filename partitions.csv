@@ -1,0 +1,21 @@
+# ESP32 Weather Station 用 カスタムパーティションテーブル
+#
+# [このファイルの役割]
+#   ESP32 (4MB Flash) の領域配分を変更し、
+#   アプリケーション領域 (APP) を広げます。
+#
+# [デフォルト (default.csv) との違い]
+#   デフォルト:  APP 1.3MB + APP1 1.3MB + SPIFFS 1.5MB (OTA用に2分割)
+#   今回:        APP 1.9MB + SPIFFS 1.4MB (OTAなし、APP優先)
+#
+#   OTA (Over-The-Air アップデート) を使わないので APP1 を削除し、
+#   その分を APP に回しています。これで約 1.9MB まで使えます。
+#
+# [メモリマップ]
+#   名前       タイプ  サブタイプ   オフセット    サイズ          説明
+# Name,        Type,   SubType,     Offset,      Size,           Flags
+nvs,           data,   nvs,         0x9000,      0x5000,
+otadata,       data,   ota,         0xe000,      0x2000,
+app0,          app,    ota_0,       0x10000,     0x1E0000,
+spiffs,        data,   spiffs,      0x1F0000,    0x200000,
+coredump,      data,   coredump,    0x3F0000,    0x10000,
