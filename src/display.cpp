@@ -113,8 +113,8 @@ void drawTemp()
   u8g2.print(buf);
 
   // 「度」だけ日本語フォントに切り替えて続けて描画
-  u8g2.setFont(u8g2_font_b16_t_japanese3);
-  u8g2.print("度");
+  u8g2.setFont(u8g2_font_logisoso16_tf);
+  u8g2.print("°C");
 
   // 気温の下の仕切り線を描画
   tft.drawFastHLine(0, AREA_TEMP_Y + AREA_TEMP_H + 2, 128, 0x4208);
