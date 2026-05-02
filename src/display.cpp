@@ -1,189 +1,172 @@
 /**
  * ESP32 Weather Station - 描画機能 実装
+ *
+ * [変更点]
+ *   - drawClock() + drawCity() → drawClockCity() に統合（1行化）
+ *   - drawTemp() + drawWeather() → drawCurrentWeather() に統合（コンパクト化）
+ *   - 時計は HH:MM のみ（秒なし）で毎分更新
+ *   - 気温＋天気詳細を AREA_WEATHER エリアに収める
  */
 
 #include "display.h"
 #include "cities.h"
 
 // ================================================================
-// 状態管理変数の実体定義
-// main.cpp でも extern 宣言して使用しています。
-// ここが唯一の「定義場所」です。
+// 状態管理変数の実体定義（display.h で extern 宣言済み）
 // ================================================================
-int cityIndex = 0;                          // 現在表示中の都市インデックス（最初は0番目）
-float currentTemp = 0;                      // 現在の気温（初期値0）
-int currentWeatherCode = 0;                 // 現在のWMO天気コード（初期値0）
+int   cityIndex        = 0;      // 現在表示中の都市インデックス
+float currentTemp      = 0;      // 現在の気温
+int   currentWeatherCode = 0;    // 現在のWMO天気コード
 
 // ================================================================
 // 差分検出用キャッシュの実体
-// 値が -1 や -999 の場合は「未描画」として扱います（初回描画を強制）。
 // ================================================================
-char prevTimeStr[16] = "";                  // 前回描画した時刻文字列
-int prevCityIndex = -1;                     // 前回の都市インデックス（初回は必ず描画）
-float prevTemp = -999;                      // 前回の気温（-999はありえない値）
-int prevWeatherCode = -1;                   // 前回の天気コード（初回は必ず描画）
+char  prevTimeStr[16]  = "";     // 前回描画した時刻文字列（HH:MM）
+int   prevCityIndex    = -1;     // -1 = 未描画（初回強制描画）
+float prevTemp         = -999;   // -999 = ありえない値（初回強制描画）
+int   prevWeatherCode  = -1;     // -1 = 未描画
 
 // ================================================================
 // タイマー管理変数の実体
-// setup() で初期化されます。
 // ================================================================
-unsigned long lastFetchAttempt = 0;         // API通信の前回試行時刻
-unsigned long lastCitySwitch = 0;           // 都市切替の前回実行時刻
-unsigned long lastClockUpdate = 0;          // 時計描画の前回実行時刻
+unsigned long lastFetchAttempt  = 0;
+unsigned long lastWeeklyFetch   = 0;
+unsigned long lastCitySwitch    = 0;
+unsigned long lastClockUpdate   = 0;
 
 // ================================================================
-// 時計エリアを描画（差分描画対応済み）
-// NTPから取得した現在の時刻を描画します。
-// strcmpで前回描画済みの文字列と比較し、同じ文字列なら描画をスキップ。
-// これにより、秒が変わった時だけ描画が実行され、ちらつきがありません。
+// 時計＋都市名エリアを描画（1行統合、差分描画対応）
+//
+// [レイアウト]
+//   左端〜60px : HH:MM（緑、setTextSize(2) = 12×16px文字）
+//   62px〜右端 : 都市名（黄色、日本語フォント b12）
+//
+// [差分描画の仕組み]
+//   strftime で "HH:MM" の文字列を作り、前回描画した prevTimeStr と比較。
+//   同じなら描画をスキップすることで、毎ループ呼んでも負荷がかかりません。
+//   都市インデックスが変わった場合は時刻文字列が同じでも再描画します。
 // ================================================================
-void drawClock()
+void drawClockCity()
 {
   struct tm ti;
-  // NTP同期がまだ完了していない場合は描画しない（時刻が取れないので意味がない）
-  if (!getLocalTime(&ti))
-    return;
+  if (!getLocalTime(&ti)) return;   // NTP 同期が完了していなければスキップ
 
-  // 現在時刻を文字列に変換（例: "14:30:05"）
+  // 秒なしの "HH:MM" 形式に変換
   char timeStr[16];
-  strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &ti);
+  strftime(timeStr, sizeof(timeStr), "%H:%M", &ti);
 
-  // 前回と同じ文字列なら描画をスキップ（ちらつき防止の核心部分）
-  if (strcmp(timeStr, prevTimeStr) == 0)
-    return;
-  strcpy(prevTimeStr, timeStr); // 今回描画したので、キャッシュを更新
+  // 前回と時刻も都市も同じなら描画スキップ（ちらつき防止）
+  if (strcmp(timeStr, prevTimeStr) == 0 && prevCityIndex == cityIndex) return;
 
-  // 時計エリアの背景色を一時的に適用
-  clearArea(AREA_CLOCK_Y, AREA_CLOCK_H, COL_BG_CLOCK);
+  // 更新があったのでキャッシュを記録
+  strcpy(prevTimeStr, timeStr);
 
-  // 文字色を緑、フォントサイズを2倍にして時刻を描画
+  // エリア全体を時計用背景色で塗りつぶす
+  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, COL_BG_CLOCK);
+
+  // ---- 時刻（左端、緑色、setTextSize(2)）----
+  // setTextSize(2) は内蔵フォントを 2倍（12×16px）に拡大します。
   tft.setTextColor(ST77XX_GREEN);
   tft.setTextSize(2);
-  tft.setCursor(15, 6);
+  tft.setCursor(2, 7);   // 上下中央: (30 - 16) / 2 = 7
   tft.print(timeStr);
-  Serial.printf("[Clock] %s\n", timeStr); // デバッグ用: 描画が発生した秒を確認
+
+  // ---- 都市名（右側、黄色、日本語フォント）----
+   u8g2.setFont(u8g2_font_b16_t_japanese3);
+   u8g2.setForegroundColor(ST77XX_YELLOW);
+   u8g2.setBackgroundColor(COL_BG_CLOCK);
+   u8g2.setCursor(64, AREA_CLOCK_Y + AREA_CLOCK_H - 3);
+  u8g2.print(cities[cityIndex].name);
+
+  Serial.printf("[Clock] %s  %s\n", timeStr, cities[cityIndex].name);
 }
 
 // ================================================================
-// 都市名エリアを描画
-// 都市切替のタイミングだけで呼ばれます（頻度が低いのでキャッシュ不要）。
-// 日本語フォントライブラリ(U8g2)を使って都市名を表示しています。
+// 現在天気エリアを描画（アイコン＋気温＋天気詳細を1エリアに統合）
+//
+// [レイアウト（AREA_WEATHER_Y〜+44px）]
+//   左端(x=2, y+2): 天気アイコン 36×36px
+//   x=44, 上段   : 気温（大）+ °C（小）
+//   x=44, 下段   : 天気詳細テキスト（日本語、小さめ）
+//
+// drawWeatherInfo() が背景を事前に塗りつぶしているので
+// ここでは clearArea を呼ばずに直接描画します。
 // ================================================================
-void drawCity()
+void drawCurrentWeather()
 {
-  // 注: drawWeatherInfo() が背景を一括で塗りつぶしているので、
-  // ここでは個別にクリア（黒塗り）しません。
+  // ---- 天気アイコン（左端、36×36px）----
+  drawWeatherIcon(2, AREA_WEATHER_Y + 4, currentWeatherCode);
 
-  // 日本語フォントをセットして都市名を描画
-  u8g2.setFont(u8g2_font_b16_t_japanese3);
-  u8g2.setForegroundColor(ST77XX_YELLOW);
-
-  // Stringを一度変数に格納して、描画関数に渡す（メモリ確保の安定化）
-  String label = String(cities[cityIndex].name);
-  u8g2.setCursor(8, AREA_CITY_Y + AREA_CITY_H - 4);   // ベースライン: エリア下端から4px上
-  u8g2.print(label.c_str());
-
-  // 都市名の下に仕切り線を描画（黒背景化を防ぐため、背景に馴染む色を使用）
-  tft.drawFastHLine(0, AREA_CITY_Y + AREA_CITY_H + 2, 128, 0x4208);
-
-  Serial.printf("[City] %s\n", cities[cityIndex].name); // デバッグ用: 都市切替を確認
-}
-
-// ================================================================
-// 気温エリアを描画
-// 天気アイコン（左）と気温（右）を表示します。
-// 天気データ更新時・都市切替時に呼ばれます。
-// ================================================================
-void drawTemp()
-{
-  // 注: drawWeatherInfo() が背景を一括で塗りつぶしているので、
-  // ここでは個別にクリアしません。
-
-  // 天気アイコンを左側に描画
-  drawWeatherIcon(8, AREA_TEMP_Y + 4, currentWeatherCode);
-
-  // 気温をアイコンの右 side に描画（アイコンと重ならないようにX座標を48にシフト）
-  u8g2.setFont(u8g2_font_logisoso24_tr);    // アイコンと並べるためサイズダウン（32→24）
+  // ---- 気温（上段右側）----
+  // logisoso20_tr : 数字専用の細身フォント（高さ約20px）
+  u8g2.setFont(u8g2_font_logisoso20_tr);
   u8g2.setForegroundColor(ST77XX_CYAN);
-  u8g2.setCursor(48, AREA_TEMP_Y + AREA_TEMP_H - 18);
-
-  // 気温を小数点1桁で文字列化（例: "25.3"）
-  char buf[16];
+  // ベースライン Y = エリア上端 + 24（上段の中央あたり）
+  u8g2.setCursor(44, AREA_WEATHER_Y + 24);
+  char buf[8];
   snprintf(buf, sizeof(buf), "%.1f", currentTemp);
   u8g2.print(buf);
 
-  // 「度」だけ日本語フォントに切り替えて続けて描画
-  u8g2.setFont(u8g2_font_logisoso16_tf);
+  // °C を小さいフォントで続けて描画
+  u8g2.setFont(u8g2_font_logisoso20_tr);
   u8g2.print("°C");
 
-  // 気温の下の仕切り線を描画
-  tft.drawFastHLine(0, AREA_TEMP_Y + AREA_TEMP_H + 2, 128, 0x4208);
-}
-
-// ================================================================
-// 天気説明エリアを描画
-// 天気コードを日本語に変換したテキストを描画します。
-// 天気データ更新時・都市切替時に呼ばれます。
-// ================================================================
-void drawWeather()
-{
-  // 注: drawWeatherInfo() が背景を一括で塗りつぶしているので、
-  // ここでは個別にクリアしません。
-
-  u8g2.setFont(u8g2_font_b16_t_japanese3);
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(8, AREA_WEATHER_Y + AREA_WEATHER_H - 12);  // 少し上に調整
-
+ // ---- 天気詳細テキスト（下段、日本語）----
+   u8g2.setFont(u8g2_font_b16_t_japanese3);
+   u8g2.setForegroundColor(ST77XX_WHITE);
+   u8g2.setCursor(44, AREA_WEATHER_Y + 38);
   String ws = getWeatherJp(currentWeatherCode);
   u8g2.print(ws.c_str());
-
-  // 境界線（アクセント）を描画
-  //tft.drawFastHLine(4, AREA_WEATHER_Y - 4, 120, 0x4208);
 }
 
 // ================================================================
-// 気温・天気説明をまとめて更新（差分描画対応済み）
-// 都市切替時・API通信でデータが变化した時に呼びます。
-// 全体の処理の流れ:
-//   1. 天気に応じた背景色を取得して画面を塗りつぶす
-//   2. 文字と背景色の色を一致させる（黒い枠の残りを防ぐ）
-//   3. 都市名・気温・天気説明を一筆描画
-//   4. キャッシュに現在値を記録（次回差分チェック用）
+// 天気情報をまとめて更新（都市切替・API更新時に呼ぶ）
+//
+// [処理の流れ]
+//   1. 天気コードに応じた背景色を取得
+//   2. 時計エリア下〜画面下端（ティッカーエリア除く）を背景色で一括塗りつぶし
+//   3. u8g2 の背景色を画面と合わせる（黒い矩形が文字の後ろに残るのを防ぐ）
+//   4. 時計＋都市名、現在天気、週間天気を描画
+//   5. キャッシュを更新（次回差分チェック用）
 // ================================================================
 void drawWeatherInfo()
 {
-  // 天気に応じた背景色を取得
   uint16_t bg = getBgColor(currentWeatherCode);
 
-  // 時計エリアの下から画面最下部までを一括で背景色に塗りつぶす。
-  // これにより、文字やラインの隙間に黒色が残るのを防げます。
-  tft.fillRect(0, AREA_CITY_Y, 128, 160 - AREA_CITY_Y, bg);
+  // 時計エリアの下からティッカーエリアの手前（Y=139）まで一括塗りつぶし
+  // （ティッカーエリアは ticker.cpp が管理するため触らない）
+  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_TICKER_Y - AREA_CLOCK_Y, bg);
 
-  // 日本語フォントの背景色を画面の背景色と一致させる。
-  // U8g2はデフォルトが黒の背景なので、これだと文字の後ろが黒四角になる。
+  // u8g2 の背景色を画面と合わせる
   u8g2.setBackgroundColor(bg);
 
   // 各エリアを描画
-  drawCity();
-  drawTemp();
-  drawWeather();
+  drawClockCity();
+  drawCurrentWeather();
+  drawWeeklyForecast();   // 週間天気（weather.cpp で実装）
 
-  // キャッシュを現在値で更新（次回、差分チェックで「前と同じ値」なら
-  // スキップするための記録）
-  prevTemp = currentTemp;
+  // キャッシュ更新
+  prevTemp        = currentTemp;
   prevWeatherCode = currentWeatherCode;
-  Serial.printf("[Weather] Temp: %.1f, Code: %d (%s)\n",
-                currentTemp, currentWeatherCode,
-                getWeatherJp(currentWeatherCode).c_str()); // デバッグ用
+  prevCityIndex   = cityIndex;
+
+  Serial.printf("[Display] %s %.1f°C code=%d\n",
+                cities[cityIndex].name, currentTemp, currentWeatherCode);
 }
 
 // ================================================================
 // 起動時に一度だけ呼ぶ静的要素の描画
-// 仕切り線など、変更されない要素を描画します。
-// 初期表示時に1回だけ呼び、以後は変更しません。
 // ================================================================
 void drawStaticElements()
 {
   tft.fillScreen(ST77XX_BLACK);
-  tft.drawFastHLine(0, 30, 128, ST77XX_WHITE);  // 時計エリアと情報エリアの区切り線
+
+  // 時計エリアと現在天気エリアの区切り線（白）
+  tft.drawFastHLine(0, LINE_Y1, SCREEN_W, ST77XX_WHITE);
+
+  // 現在天気エリアと週間天気エリアの区切り線（薄いグレー）
+  tft.drawFastHLine(0, LINE_Y2, SCREEN_W, 0x4208);
+
+  // 週間天気エリアとティッカーエリアの区切り線（白）
+  tft.drawFastHLine(0, LINE_Y3, SCREEN_W, ST77XX_WHITE);
 }

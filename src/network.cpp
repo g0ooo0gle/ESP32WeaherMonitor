@@ -1,10 +1,15 @@
 /**
  * ESP32 Weather Station - ネットワーク・通信機能 実装
+ *
+ * [変更点]
+ *   - updateWeeklyForecast() を新設
+ *     Open-Meteo の daily API で週間天気（最高・最低気温・天気コード）を取得します。
  */
 
 #include "network.h"
 #include "cities.h"
 #include "display.h"
+#include "weather.h"   // DailyForecast 構造体、weeklyForecast[] を使うため
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -14,128 +19,214 @@
 
 // ================================================================
 // WiFiManager による自動接続
-// 初回起動時はAPモードで設定画面を表示し、2回目以降は自動接続。
 // ================================================================
 bool setupWiFi()
 {
-  // WiFiManager のインスタンスを作成（ESP32のWiFi設定を管理する）
   WiFiManager wm;
 
-  // autoConnect() を呼ぶと以下のように動作します:
-  //   (1) 以前保存したSSID/パスワードがあれば、それを自動接続
-  //   (2) 保存がない場合、"ESP32_Weather_Config" というAPを生成
-  //       → スマホでWiFiに接続し、浏览器で192.168.4.1にアクセスすると
-  //         SSID/パスワードの設定画面が表示される
-  //   (3) 正しいSSID/パスワードで接続できたら、APモードを自動的に終了
+  // autoConnect():
+  //   (1) 保存済みSSID/パスワードがあれば自動接続
+  //   (2) なければ "ESP32_Weather_Config" という AP を起動
+  //       → スマホで接続 → 192.168.4.1 にアクセス → SSID/パスワード設定
   if (!wm.autoConnect("ESP32_Weather_Config"))
   {
-    // 接続失敗 → リセットして再起動（接続設定を再度促す）
     Serial.println(F("[Network] WiFi接続に失敗しました。再起動します..."));
     ESP.restart();
     return false;
   }
 
-  // 接続成功
-  Serial.println(F("[Network] WiFi接続完了! IP取得:"));
+  Serial.println(F("[Network] WiFi接続完了! IP:"));
   Serial.println(WiFi.localIP());
   return true;
 }
 
 // ================================================================
-// NTP（Network Time Protocol）による時刻同期
-// NICT（情報通信研究機構）とGoogleのNTPサーバーに接続し、
-// 日本標準時（JST = UTC+9）を取得します。
+// NTP による時刻同期設定
 // ================================================================
 void setupNTP()
 {
-  // configTime() の引数:
-  //   1 個目: 時差（秒単位）→ JSTはUTC+9なので 9*3600
-  //   2 個目: サマータイムのオフセット（今回は日本に不要なので0）
-  //   3 個目 以降: NTPサーバーのホスト名（2つ以上指定すると、
-  //                 一つが動かなければもう一つにフォールバック）
+  // configTime(時差秒, サマータイム秒, NTPサーバー1, NTPサーバー2)
+  // JSTはUTC+9 = 9×3600秒。サマータイムは日本にないので0。
   configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com");
 }
 
 // ================================================================
-// Open-Meteo API から天気データを取得して更新
-// 取得するデータ:
-//   - temperature（気温）: 今の気温（摂氏）
-//   - weathercode（WMO天気コード）: 天気の数値コード（0=快晴, 61=小雨, など）
-//
-// 戻り値が true の場合のみ、loop() 側で画面を再描画します。
-// これにより、データが同じ値の場合は無駄な描画が行われません。
+// Open-Meteo API から現在天気データを取得
 // ================================================================
 bool updateWeather()
 {
-  // WiFiが未接続なら、取得できないので即座にfalseを返す
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println(F("[Weather] WiFi未接続のため取得をスキップします。"));
+    Serial.println(F("[Weather] WiFi未接続のためスキップします。"));
     return false;
   }
 
-  // HTTPクライアントを作成（3秒でタイムアウト。ハング防止）
   HTTPClient http;
-  http.setTimeout(3000);
+  http.setTimeout(3000);   // 3秒でタイムアウト
 
-  // Open-Meteo API のURLを構築
-  // latitude: 緯度、longitude: 経度、current_weather: 現在天気をリクエスト
-  // timezone: Asia/Tokyo（APIのレスポンス時刻をJSTに合わせます）
+  // current_weather=true で現在の気温とWMOコードを取得
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
-               + String(cities[cityIndex].lat)
+               + String(cities[cityIndex].lat, 4)
                + "&longitude="
-               + String(cities[cityIndex].lon)
+               + String(cities[cityIndex].lon, 4)
                + "&current_weather=true"
                + "&timezone=Asia%2FTokyo";
 
-  Serial.printf("[Weather] 取得開始: %s\n", url.c_str());
+  Serial.printf("[Weather] 取得: %s\n", cities[cityIndex].name);
   http.begin(url);
   int httpCode = http.GET();
-  bool changed = false; // データが変化したかどうか
+  bool changed = false;
 
-  // HTTPレスポンスが正常（200 OK）の場合
   if (httpCode == HTTP_CODE_OK)
   {
-    // レスポンス本文（JSON文字列）を取得
     String payload = http.getString();
 
-    // ArduinoJsonでJSONをパース（メモリ確保は2048バイト）
+    // ArduinoJson でパース（2048バイトのバッファ）
     DynamicJsonDocument doc(2048);
     DeserializationError err = deserializeJson(doc, payload);
 
-    if (!err) // パース成功
+    if (!err)
     {
-      // JSONから気温と天気コードを取得
       float newTemp = doc["current_weather"]["temperature"].as<float>();
-      int newCode = doc["current_weather"]["weathercode"].as<int>();
+      int   newCode = doc["current_weather"]["weathercode"].as<int>();
 
-      // 値に変化があった場合のみ更新
-      // 気温または天気コードのいずれかが変わったら changed = true
       if (currentTemp != newTemp || currentWeatherCode != newCode)
       {
-        Serial.printf("[Weather] データ変化: %.1f°C code=%d → %.1f°C code=%d\n",
-                      currentTemp, currentWeatherCode, newTemp, newCode);
-        currentTemp = newTemp;
+        Serial.printf("[Weather] 更新: %.1f°C code=%d\n", newTemp, newCode);
+        currentTemp        = newTemp;
         currentWeatherCode = newCode;
         changed = true;
       }
       else
       {
-        Serial.println(F("[Weather] データ変化なし。"));
+        Serial.println(F("[Weather] 変化なし。"));
       }
     }
     else
     {
-      // JSONパースに失敗した場合
       Serial.println(F("[Weather] JSONパースエラー"));
     }
   }
   else
   {
-    // HTTPエラー発生（404, 500, タイムアウト  など）
-    Serial.printf("[Weather] HTTP FAILED, code: %d\n", httpCode);
+    Serial.printf("[Weather] HTTP失敗 code=%d\n", httpCode);
   }
 
-  http.end();  // 接続を閉じてメモリを解放
-  return changed;  // 変化があれば true
+  http.end();
+  return changed;
+}
+
+// ================================================================
+// Open-Meteo API から週間天気予報データを取得（新規）
+//
+// [取得するデータ]
+//   daily:
+//     - weathercode        : 各日の代表WMO天気コード
+//     - temperature_2m_max : 最高気温
+//     - temperature_2m_min : 最低気温
+//
+// [ラベルの付け方]
+//   取得した日付を getLocalTime() で取得した今日の日付と比較し、
+//   今日なら "今日"、明日なら "明日"、それ以降は曜日（"月"〜"日"）を付けます。
+// ================================================================
+bool updateWeeklyForecast()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println(F("[Weekly] WiFi未接続のためスキップします。"));
+    return false;
+  }
+
+  HTTPClient http;
+  http.setTimeout(5000);   // 週間天気は応答が少し大きいため5秒に設定
+
+  // daily パラメータで最大7日分を取得（past_days=0 で今日から未来のみ）
+  String url = "https://api.open-meteo.com/v1/forecast?latitude="
+               + String(cities[cityIndex].lat, 4)
+               + "&longitude="
+               + String(cities[cityIndex].lon, 4)
+               + "&daily=weathercode,temperature_2m_max,temperature_2m_min"
+               + "&timezone=Asia%2FTokyo"
+               + "&forecast_days=7";
+
+  Serial.printf("[Weekly] 取得: %s\n", cities[cityIndex].name);
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode != HTTP_CODE_OK)
+  {
+    Serial.printf("[Weekly] HTTP失敗 code=%d\n", httpCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  // weekly レスポンスは大きいので 4096 バイトのバッファを用意
+  DynamicJsonDocument doc(4096);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err)
+  {
+    Serial.println(F("[Weekly] JSONパースエラー"));
+    return false;
+  }
+
+  // daily オブジェクト内の配列を取得
+  JsonArray codes   = doc["daily"]["weathercode"];
+  JsonArray maxArr  = doc["daily"]["temperature_2m_max"];
+  JsonArray minArr  = doc["daily"]["temperature_2m_min"];
+  JsonArray dateArr = doc["daily"]["time"];   // "2025-01-01" 形式の文字列配列
+
+  // 今日の日付を取得（ラベル付けに使用）
+  struct tm today;
+  getLocalTime(&today);
+
+  // データを weeklyForecast[] に格納（最大 WEEKLY_DAYS 日分）
+  weeklyDays = 0;
+  for (int i = 0; i < (int)codes.size() && i < WEEKLY_DAYS; i++)
+  {
+    weeklyForecast[i].weatherCode = codes[i].as<int>();
+    weeklyForecast[i].tempMax     = maxArr[i].as<float>();
+    weeklyForecast[i].tempMin     = minArr[i].as<float>();
+
+    // ラベルを決定する
+    // dateArr[i] は "2025-01-15" のような文字列なので、月日だけ切り出す
+    const char *dateStr = dateArr[i].as<const char*>();
+
+    if (i == 0)
+    {
+      // 0日目は必ず今日
+      strncpy(weeklyForecast[i].label, "今日", sizeof(weeklyForecast[i].label) - 1);
+    }
+    else if (i == 1)
+    {
+      // 1日目は必ず明日
+      strncpy(weeklyForecast[i].label, "明日", sizeof(weeklyForecast[i].label) - 1);
+    }
+    else
+    {
+      // 2日目以降は曜日を計算して表示（"月" 〜 "日"）
+      // ISO日付文字列 "2025-01-15" を tm 構造体に変換
+      struct tm t = {};
+      // sscanf で年月日を読み取る
+      sscanf(dateStr, "%d-%d-%d", &t.tm_year, &t.tm_mon, &t.tm_mday);
+      t.tm_year -= 1900;   // tm_year は 1900 年からの差分
+      t.tm_mon  -= 1;      // tm_mon は 0〜11
+      mktime(&t);          // tm_wday（曜日）を計算させる
+
+      // 曜日テーブル（0=日, 1=月, ..., 6=土）
+      // 短い2バイト文字（1文字）で収めます
+      const char *weekdays[] = {"日", "月", "火", "水", "木", "金", "土"};
+      strncpy(weeklyForecast[i].label,
+              weekdays[t.tm_wday],
+              sizeof(weeklyForecast[i].label) - 1);
+    }
+    weeklyForecast[i].label[sizeof(weeklyForecast[i].label) - 1] = '\0';   // 終端保証
+
+    weeklyDays++;
+  }
+
+  Serial.printf("[Weekly] 取得完了: %d日分\n", weeklyDays);
+  return true;
 }

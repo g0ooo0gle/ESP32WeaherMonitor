@@ -4,6 +4,16 @@
  * このファイルはプロジェクト全体の定数定義を一元管理しています。
  * ピン配置、画面レイアウト、色、インターバルなどの「数値」を
  * ここに集めることで、後から値を変更するのが簡単になります。
+ *
+ * [画面レイアウト概要 128×160px 縦向き]
+ *
+ *   Y=  0〜29  : 時計＋都市名エリア（1行に統合）
+ *   Y= 30〜31  : 区切り線
+ *   Y= 32〜75  : 現在天気エリア（アイコン＋気温＋天気詳細を1行に）
+ *   Y= 76〜77  : 区切り線
+ *   Y= 78〜137 : 週間天気エリア（今日含む6日分）
+ *   Y=138〜139 : 区切り線
+ *   Y=140〜159 : ニューステッカーエリア（大きめフォントでスクロール）
  */
 
 #ifndef CONFIG_H
@@ -20,51 +30,92 @@
 // ハードウェア配線に合わせて変更してください。
 // ------------------------------------------------------------------
 #define TFT_SCLK 18   // SCL (Clock)
-#define TFT_MOSI 23  // SDA (Data)
-#define TFT_RST  4   // RESET
-#define TFT_DC   2   // A0 (Data/Command)
-#define TFT_CS   5   // CS (Chip Select)
+#define TFT_MOSI 23   // SDA (Data)
+#define TFT_RST   4   // RESET
+#define TFT_DC    2   // A0 (Data/Command)
+#define TFT_CS    5   // CS (Chip Select)
 
 // ------------------------------------------------------------------
-// ディスプレイインスタンス
-// main.cpp で外部参照します（extern宣言）
+// ディスプレイインスタンス（main.cpp で定義、他のファイルから extern 参照）
 // ------------------------------------------------------------------
 extern Adafruit_ST7735 tft;
 extern U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ------------------------------------------------------------------
 // 画面レイアウト定数
-// 128x160ピクセルのディスプレイを4つのエリアに分割しています。
-// ここを変更すると画面全体のレイアウトが変わります。
+// 128x160ピクセルのディスプレイを5つのエリアに分割しています。
+//
+// [変更点]
+//   - 時計と都市名を1行に統合（旧: 時計30px + 都市24px = 54px → 新: 30px）
+//   - 現在天気エリアをコンパクトに（44px）
+//   - 週間天気エリアを新設（60px、6日分）
+//   - ティッカーエリアはそのまま下部20px
 // ------------------------------------------------------------------
-#define AREA_CLOCK_Y  0     // 時計エリア 開始Y座標
-#define AREA_CLOCK_H  30    // 時計エリア 高さ
-#define AREA_CITY_Y   31    // 都市名エリア 開始Y座標
-#define AREA_CITY_H   24    // 都市名エリア 高さ
-#define AREA_TEMP_Y   58    // 気温エリア 開始Y座標
-#define AREA_TEMP_H   60    // 気温エリア 高さ
-#define AREA_WEATHER_Y 122  // 天気説明エリア 開始Y座標
-#define AREA_WEATHER_H 38   // 天気説明エリア 高さ
+
+// ① 時計＋都市名エリア（1行に統合）
+#define AREA_CLOCK_Y    0    // 開始Y座標
+#define AREA_CLOCK_H   30    // 高さ（30px: 中フォントが収まるサイズ）
+
+// ② 現在天気エリア（アイコン＋気温＋天気詳細を横に並べる）
+#define AREA_WEATHER_Y  32   // 開始Y座標（区切り線の下）
+#define AREA_WEATHER_H  44   // 高さ（アイコン36px + 上下余白4px）
+
+// ③ 週間天気エリア（6日分を縦に並べる）
+#define AREA_WEEKLY_Y   78   // 開始Y座標（区切り線の下）
+#define AREA_WEEKLY_H   60   // 高さ（1行10px × 6日分）
+
+// ④ ティッカーエリア（画面最下部）
+#define AREA_TICKER_Y  140   // 開始Y座標（区切り線の下）
+#define AREA_TICKER_H   20   // 高さ
+
+// 区切り線のY座標（区切りの位置を一元管理）
+#define LINE_Y1  30    // 時計エリアの下
+#define LINE_Y2  76    // 現在天気エリアの下
+#define LINE_Y3  138   // 週間天気エリアの下
+
+// 画面幅（ST7735S 128px固定）
+#define SCREEN_W  128
+#define SCREEN_H  160
 
 // ------------------------------------------------------------------
 // 背景色 (RGB565形式)
 // 天気ごとに異なる背景色を適用して、視覚的に分かりやすくしています。
+// RGB565 は R(5bit) G(6bit) B(5bit) を1つの16bit値に詰めた形式です。
 // ------------------------------------------------------------------
-#define COL_BG_CLEAR  0x0952   // 快晴: #1a2a4a
-#define COL_BG_RAIN   0x0926   // 雨: #1a2535
-#define COL_BG_SNOW   0x0E46   // 雪: #1c2535
-#define COL_BG_THUNDER 0x08A5  // 雷: #1a1a2e
-#define COL_BG_FOG    0x0904   // 霧: #1e2020
-#define COL_BG_CLOUDY 0x08E4   // 曇り: #1a1e22
-#define COL_BG_CLOCK  0x00A4   // 時計エリア: #0d1f3c相当
+#define COL_BG_CLEAR    0x0952   // 快晴: 深い青（#1a2a4a）
+#define COL_BG_RAIN     0x0926   // 雨: 暗い青灰（#1a2535）
+#define COL_BG_SNOW     0x0E46   // 雪: 青みがかった暗い色（#1c2535）
+#define COL_BG_THUNDER  0x08A5   // 雷: 暗い紫紺（#1a1a2e）
+#define COL_BG_FOG      0x0904   // 霧: 暗いグレー（#1e2020）
+#define COL_BG_CLOUDY   0x08E4   // 曇り: 暗い青灰（#1a1e22）
+#define COL_BG_CLOCK    0x00A4   // 時計エリア: 濃い青（#0d1f3c相当）
 
 // ------------------------------------------------------------------
 // タイマー間隔 (ミリ秒)
-// ノンブロッキング処理のための時間間隔 Defines。
-// delay() を使わず、millis() でタイミングを制御しています。
+//
+// ノンブロッキング処理のための時間間隔定数です。
+// delay() を使わず、millis() の差分でタイミングを制御しています。
+//
+// [変更点]
+//   - clockInterval を廃止（秒表示をやめたため 1 分単位でよい）
+//   - clockMinuteInterval を新設（1分ごとに HH:MM を更新）
+//   - tickerInterval は ticker.h に移動（ティッカー固有の設定のため）
 // ------------------------------------------------------------------
-const unsigned long fetchInterval    = 15UL * 60UL * 1000UL;  // 天気取得間隔: 15分
-const unsigned long citySwitchInterval = 15000UL;              // 都市切替間隔: 15秒
-const unsigned long clockInterval     = 500UL;                 // 時計更新間隔: 0.5秒
+
+// 天気データ（現在天気）の取得間隔: 15分
+// Open-Meteo API の無料プランではレート制限があるため、短くしすぎ厳禁。
+const unsigned long fetchInterval       = 15UL * 60UL * 1000UL;
+
+// 週間天気データの取得間隔: 1時間
+// 週間予報は数時間単位でしか変わらないため、現在天気より長めに設定。
+const unsigned long weeklyFetchInterval = 60UL * 60UL * 1000UL;
+
+// 都市切替間隔: 20秒
+// 週間天気も表示するようになったため、旧15秒より少し長くしました。
+const unsigned long citySwitchInterval  = 20000UL;
+
+// 時計更新間隔: 30秒
+// 秒表示をやめたので 30 秒ごとの更新で十分（差分描画なので余裕あり）。
+const unsigned long clockInterval       = 30000UL;
 
 #endif // CONFIG_H
