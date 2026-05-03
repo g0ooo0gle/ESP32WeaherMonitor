@@ -32,8 +32,9 @@
 // ================================================================
 // 設定変数（settings.cpp で実体定義）
 // ================================================================
-extern int myCityIndex;   // 自分の都市インデックス (0 〜 cityCount-1)
-extern int regionFilter;  // 巡回する地方 (FILTER_xxx)
+extern int  myCityIndex;      // 自分の都市インデックス (0 〜 cityCount-1)
+extern int  regionFilter;     // 巡回する地方 (FILTER_xxx)
+extern bool settingsChanged;  // Web 保存後に true → loop() で天気更新＆再描画
 
 // ================================================================
 // 設定の読み書き

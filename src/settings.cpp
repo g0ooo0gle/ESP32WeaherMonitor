@@ -22,8 +22,9 @@
 // ================================================================
 // 設定変数の実体
 // ================================================================
-int myCityIndex  = 12;           // デフォルト: 東京
-int regionFilter = FILTER_ALL;   // デフォルト: 全国
+int  myCityIndex     = 12;           // デフォルト: 東京
+int  regionFilter    = FILTER_ALL;   // デフォルト: 全国
+bool settingsChanged = false;        // Web 保存後フラグ
 
 // ================================================================
 // 内部変数
@@ -226,16 +227,16 @@ static void handleSave()
 
   saveSettings();
 
-  // 実行中の状態にも即時反映
+  // cityIndex を即時調整（loop() 側で updateWeather() と再描画）
   if (currentMode == DisplayMode::SINGLE) {
-    // 自分の都市モード中なら myCityIndex を反映
     cityIndex = myCityIndex;
   } else {
-    // 巡回中に地方フィルタが変わり現在都市がはみ出た場合は先頭に移動
     if (!cityMatchesFilter(cityIndex)) {
       cityIndex = getFirstCityInRegion();
     }
   }
+
+  settingsChanged = true;   // loop() に天気更新＆再描画を依頼
 
   server.sendHeader("Location", "/?saved=1");
   server.send(302);

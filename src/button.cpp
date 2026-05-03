@@ -74,18 +74,21 @@ static void modeLongPress()
 
   if (currentMode == DisplayMode::ALL_CITIES) {
     currentMode = DisplayMode::SINGLE;
-    cityIndex   = myCityIndex;   // 自分の都市を表示
-    Serial.printf("[Button] MODE長押し: 全国 → 自分の都市 (%s)\n",
+    cityIndex   = myCityIndex;
+    Serial.printf("[Button] MODE長押し: 地方巡回 → 自分の都市 (%s)\n",
                   cities[cityIndex].name);
 
-    // 1都市モードに入ったとき、現在のサブビューに合わせてデータ取得
+    updateWeather();
     if (currentSub == SubView::WEEKLY) updateWeeklyForecast();
     else                                updateHourlyForecast();
   } else {
     currentMode = DisplayMode::ALL_CITIES;
-    cityIndex   = getFirstCityInRegion();   // 地方フィルタの先頭都市から再開
+    cityIndex   = getFirstCityInRegion();
     Serial.printf("[Button] MODE長押し: 自分の都市 → 地方巡回 (%s〜)\n",
                   cities[cityIndex].name);
+
+    updateWeather();
+    updateWeeklyForecast();
   }
 
   drawWeatherInfo();

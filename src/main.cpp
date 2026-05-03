@@ -158,6 +158,17 @@ void loop()
   // ---- Web 設定サーバー ----
   handleWebServer();
 
+  // ---- Web 設定保存後の即時反映 ----
+  if (settingsChanged) {
+    settingsChanged = false;
+    Serial.println(F("[Loop] 設定変更を反映: 天気データ更新..."));
+    updateWeather();
+    updateWeeklyForecast();
+    if (currentScreen == Screen::WEATHER) drawWeatherInfo();
+    lastFetchAttempt = now;
+    lastWeeklyFetch  = now;
+  }
+
   // ====================================================================
   // 画面ごとの描画処理
   // ====================================================================
