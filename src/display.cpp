@@ -22,10 +22,11 @@ int   currentWeatherCode = 0;
 // ================================================================
 // 差分検出用キャッシュの実体
 // ================================================================
-char  prevTimeStr[16]  = "";
-int   prevCityIndex    = -1;
-float prevTemp         = -999;
-int   prevWeatherCode  = -1;
+char        prevTimeStr[16]  = "";
+int         prevCityIndex    = -1;
+float       prevTemp         = -999;
+int         prevWeatherCode  = -1;
+DisplayMode prevMode         = DisplayMode::ALL_CITIES;
 
 // ================================================================
 // タイマー管理変数の実体
@@ -47,10 +48,11 @@ void drawClockCity()
   char timeStr[16];
   strftime(timeStr, sizeof(timeStr), "%H:%M", &ti);
 
-  // 時刻も都市も同じなら描画スキップ
-  if (strcmp(timeStr, prevTimeStr) == 0 && prevCityIndex == cityIndex) return;
+  // 時刻・都市・モードがすべて同じなら描画スキップ
+  if (strcmp(timeStr, prevTimeStr) == 0 && prevCityIndex == cityIndex && prevMode == currentMode) return;
 
   strcpy(prevTimeStr, timeStr);
+  prevMode = currentMode;
 
   // エリア塗りつぶし
   tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, COL_BG_CLOCK);

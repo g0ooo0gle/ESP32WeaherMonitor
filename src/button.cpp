@@ -18,6 +18,7 @@
 #include "network.h"
 #include "ticker.h"
 #include "cities.h"
+#include "settings.h"
 
 // ================================================================
 // 状態変数の実体定義
@@ -73,14 +74,18 @@ static void modeLongPress()
 
   if (currentMode == DisplayMode::ALL_CITIES) {
     currentMode = DisplayMode::SINGLE;
-    Serial.println(F("[Button] MODE長押し: 全国 → 1都市詳細"));
+    cityIndex   = myCityIndex;   // 自分の都市を表示
+    Serial.printf("[Button] MODE長押し: 全国 → 自分の都市 (%s)\n",
+                  cities[cityIndex].name);
 
     // 1都市モードに入ったとき、現在のサブビューに合わせてデータ取得
     if (currentSub == SubView::WEEKLY) updateWeeklyForecast();
     else                                updateHourlyForecast();
   } else {
     currentMode = DisplayMode::ALL_CITIES;
-    Serial.println(F("[Button] MODE長押し: 1都市詳細 → 全国巡回"));
+    cityIndex   = getFirstCityInRegion();   // 地方フィルタの先頭都市から再開
+    Serial.printf("[Button] MODE長押し: 自分の都市 → 地方巡回 (%s〜)\n",
+                  cities[cityIndex].name);
   }
 
   drawWeatherInfo();
@@ -100,8 +105,8 @@ static void cityShortPress()
 
   // WEATHER画面
   if (currentMode == DisplayMode::ALL_CITIES) {
-    // 全国モード → 次の都市
-    cityIndex = (cityIndex + 1) % cityCount;
+    // 全国モード → 地方フィルタに従って次の都市
+    cityIndex = getNextCityInRegion(cityIndex);
     Serial.printf("[Button] CITY短押し: 都市 → %s\n", cities[cityIndex].name);
     updateWeather();
     drawWeatherInfo();

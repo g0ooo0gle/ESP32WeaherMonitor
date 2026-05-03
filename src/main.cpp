@@ -46,6 +46,7 @@
 #include "network.h"
 #include "ticker.h"
 #include "button.h"
+#include "settings.h"
 
 // ディスプレイインスタンスの実体
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
@@ -90,11 +91,20 @@ void setup()
   setupNTP();
   Serial.println(F("[Setup] NTP configured."));
 
+  // ---- 設定読み込み (NVS) ----
+  loadSettings();
+
+  // ---- Web 設定サーバー起動 ----
+  setupWebServer();
+
   // ---- 静的レイアウト ----
   drawStaticElements();
 
   // ---- ボタン初期化 ----
   setupButtons();
+
+  // ---- 起動時の都市を地方フィルタに合わせて初期化 ----
+  cityIndex = getFirstCityInRegion();
 
   // ---- タイマー初期化 ----
   unsigned long t0 = millis();
@@ -145,6 +155,9 @@ void loop()
   // ---- ボタン処理 (両画面共通) ----
   updateButtons();
 
+  // ---- Web 設定サーバー ----
+  handleWebServer();
+
   // ====================================================================
   // 画面ごとの描画処理
   // ====================================================================
@@ -167,10 +180,10 @@ void loop()
   // → ニュース画面から戻ったときに最新データが表示される
   // ====================================================================
 
-  // 全国モード時のみ都市自動切替
+  // 全国モード時のみ都市自動切替（地方フィルタに従って次の都市へ）
   if (currentMode == DisplayMode::ALL_CITIES) {
     if (now - lastCitySwitch >= citySwitchInterval) {
-      cityIndex = (cityIndex + 1) % cityCount;
+      cityIndex = getNextCityInRegion(cityIndex);
       Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
 
       updateWeather();
