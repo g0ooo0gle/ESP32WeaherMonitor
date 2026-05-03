@@ -198,12 +198,12 @@ static void handleRoot()
 
   // ---- ボタン操作の説明 ----
   html += F("<div class='note'>"
-            "<b>ボタン操作</b><br>"
-            "MODE 短押し &nbsp;→ 天気 ⇄ ニュース<br>"
-            "MODE 長押し &nbsp;→ 地方巡回 ⇄ 自分の都市<br>"
-            "CITY 短押し (巡回中) → 次の都市<br>"
-            "CITY 短押し (自分の都市) → 週間 ⇄ 毎時<br>"
-            "CITY 長押し (自分の都市) → 次の都市へ一時切替"
+            "<b>ボタン操作（短押しのみ）</b><br>"
+            "SCREEN &nbsp;→ 天気 ⇄ ニュース<br>"
+            "MODE &nbsp;&nbsp;&nbsp;→ 地方巡回 ⇄ 自分の都市<br>"
+            "NEXT（天気/巡回中）&nbsp;&nbsp;&nbsp;→ 次の都市<br>"
+            "NEXT（天気/自分の都市）→ 週間 ⇄ 毎時<br>"
+            "NEXT（ニュース）&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ 次の見出し"
             "</div>");
 
   html += F("</body></html>");
