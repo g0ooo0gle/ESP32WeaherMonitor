@@ -112,7 +112,7 @@ const unsigned long citySwitchInterval  = 20000UL;
 // 時計更新間隔: 30秒
 const unsigned long clockInterval       = 30000UL;
 
-// ニュース画面の見出し自動切替間隔: 5秒
-const unsigned long newsPageInterval    = 5000UL;
+// ニュース画面の見出し自動切替間隔: 10秒
+const unsigned long newsPageInterval    = 10000UL;
 
 #endif // CONFIG_H

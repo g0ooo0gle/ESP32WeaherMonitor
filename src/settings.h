@@ -36,6 +36,20 @@ extern int  myCityIndex;      // 自分の都市インデックス (0 〜 cityCo
 extern int  regionFilter;     // 巡回する地方 (FILTER_xxx)
 extern bool settingsChanged;  // Web 保存後に true → loop() で天気更新＆再描画
 
+// カスタム都市（手動入力した都市名・緯度・経度）
+extern char  customCityName[32];  // 都市名
+extern float customCityLat;       // 緯度
+extern float customCityLon;       // 経度
+extern bool  useCustomCity;       // true = カスタム優先、false = 登録都市を使用
+
+// ================================================================
+// 自分の都市モードで使う値を返すアクセサ
+// useCustomCity && currentMode==SINGLE のときカスタム値、それ以外は cities[cityIndex]
+// ================================================================
+const char* getActiveName();
+float       getActiveLat();
+float       getActiveLon();
+
 // ================================================================
 // 設定の読み書き
 // ================================================================

@@ -11,6 +11,7 @@
 #include "cities.h"
 #include "display.h"
 #include "weather.h"
+#include "settings.h"
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -60,13 +61,13 @@ bool updateWeather()
   http.setTimeout(3000);
 
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
-               + String(cities[cityIndex].lat, 4)
+               + String(getActiveLat(), 4)
                + "&longitude="
-               + String(cities[cityIndex].lon, 4)
+               + String(getActiveLon(), 4)
                + "&current_weather=true"
                + "&timezone=Asia%2FTokyo";
 
-  Serial.printf("[Weather] 取得: %s\n", cities[cityIndex].name);
+  Serial.printf("[Weather] 取得: %s\n", getActiveName());
   http.begin(url);
   int httpCode = http.GET();
   bool changed = false;
@@ -124,14 +125,14 @@ bool updateWeeklyForecast()
   http.setTimeout(5000);
 
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
-               + String(cities[cityIndex].lat, 4)
+               + String(getActiveLat(), 4)
                + "&longitude="
-               + String(cities[cityIndex].lon, 4)
+               + String(getActiveLon(), 4)
                + "&daily=weathercode,temperature_2m_max,temperature_2m_min"
                + "&timezone=Asia%2FTokyo"
                + "&forecast_days=7";
 
-  Serial.printf("[Weekly] 取得: %s\n", cities[cityIndex].name);
+  Serial.printf("[Weekly] 取得: %s\n", getActiveName());
   http.begin(url);
   int httpCode = http.GET();
 
@@ -227,14 +228,14 @@ bool updateHourlyForecast()
 
   // hourly パラメータで2日分（48時間）を取得
   String url = "https://api.open-meteo.com/v1/forecast?latitude="
-               + String(cities[cityIndex].lat, 4)
+               + String(getActiveLat(), 4)
                + "&longitude="
-               + String(cities[cityIndex].lon, 4)
+               + String(getActiveLon(), 4)
                + "&hourly=temperature_2m,weathercode"
                + "&timezone=Asia%2FTokyo"
                + "&forecast_days=2";
 
-  Serial.printf("[Hourly] 取得: %s\n", cities[cityIndex].name);
+  Serial.printf("[Hourly] 取得: %s\n", getActiveName());
   http.begin(url);
   int httpCode = http.GET();
 

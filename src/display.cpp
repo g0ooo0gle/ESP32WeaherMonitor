@@ -11,6 +11,7 @@
 #include "display.h"
 #include "cities.h"
 #include "button.h"
+#include "settings.h"
 
 // ================================================================
 // 状態管理変数の実体定義
@@ -65,7 +66,7 @@ void drawClockCity()
   u8g2.print(timeStr);
 
   // ---- 都市名 (japanese3) ----
-  u8g2.setFont(u8g2_font_b16_t_japanese3);
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
   u8g2.setCursor(72, AREA_CLOCK_Y + AREA_CLOCK_H - 8);
 
@@ -73,9 +74,9 @@ void drawClockCity()
   if (currentMode == DisplayMode::SINGLE) {
     u8g2.print("\xE2\x98\x85");   // UTF-8 の ★
   }
-  u8g2.print(cities[cityIndex].name);
+  u8g2.print(getActiveName());
 
-  Serial.printf("[Clock] %s  %s\n", timeStr, cities[cityIndex].name);
+  Serial.printf("[Clock] %s  %s\n", timeStr, getActiveName());
 }
 
 // ================================================================
@@ -138,7 +139,7 @@ void drawWeatherInfo()
   prevCityIndex   = cityIndex;
 
   Serial.printf("[Display] %s %.1f°C code=%d\n",
-                cities[cityIndex].name, currentTemp, currentWeatherCode);
+                getActiveName(), currentTemp, currentWeatherCode);
 }
 
 // ================================================================
