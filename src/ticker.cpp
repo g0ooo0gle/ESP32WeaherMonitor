@@ -1,18 +1,23 @@
 /**
  * ESP32 Weather Station - ニュース画面 実装
  *
- * [表示フロー]
- *   1. STATIC フェーズ (30秒):
- *        12px フォントで折り返し多行表示。見出しを静止して読む。
- *        長い見出しは末尾が切れることがあるが、次フェーズで補完。
- *   2. SCROLL フェーズ:
- *        16px フォントで電光掲示板スタイルの横スクロール。
- *        全文が流れ終わったら次の見出しの STATIC フェーズへ移行。
+ * [画面レイアウト]
  *
- * [利点]
- *   ・短い見出し: 30秒で全文一覧 → スクロールで再確認
- *   ・長い見出し: 切れた部分もスクロールで確認可能
- *   ・スクロール中は文字が大きく読みやすい
+ *   ┌──────────────────────────────┐  Y=  0
+ *   │ ニュース            3/12     │  タイトルバー (20px)
+ *   ├──────────────────────────────┤  Y= 20
+ *   │                              │
+ *   │  見出しを折り返し静止表示     │  静止エリア (90px、最大5行)
+ *   │  (12px フォント)             │
+ *   │                              │
+ *   ├──────────────────────────────┤  Y=112
+ *   │ ▶ テキストが右→左へ流れる   │  電光掲示板エリア (46px)
+ *   └──────────────────────────────┘  Y=160
+ *
+ * [動作フロー]
+ *   1. 見出しを静止エリアに折り返し表示 (常時)
+ *   2. 同じ見出しを電光掲示板エリアで横スクロール
+ *   3. スクロールが末尾を抜けたら次の見出しへ (スクロールが切替タイミングを決定)
  *
  * [タスク間データ共有]
  *   newsItems[]  : 取得済みの見出し配列 (共有)
@@ -37,32 +42,22 @@ static SemaphoreHandle_t newsMutex = nullptr;
 static int newsIndex = 0;
 
 // ================================================================
-// 表示フェーズ管理
-// ================================================================
-enum class NewsPhase { STATIC, SCROLL };
-
-static NewsPhase     displayPhase   = NewsPhase::STATIC;
-static unsigned long staticStartMs  = 0;      // STATIC フェーズ開始時刻
-static bool          waitingForNews = false;  // ニュース取得待ちフラグ
-
-// 静止表示時間: 30 秒
-static const unsigned long STATIC_DURATION_MS = 30000UL;
-
-// ================================================================
-// スクロール状態 (SCROLL フェーズのみで使用)
+// 電光掲示板スクロール状態
 // ================================================================
 static int           scrollX      = 0;   // 現在のスクロール X 座標 (px)
 static int           scrollTextW  = 0;   // 見出し全幅 (16px フォントで計測)
 static unsigned long lastScrollMs = 0;   // 前回スクロール更新時刻
 
+static bool waitingForNews = false;      // ニュース取得待ちフラグ
+
 static const int SCROLL_SPEED_PX = 2;   // 1 ティックあたりの移動量 (px)
 static const int SCROLL_TICK_MS  = 30;  // スクロール更新間隔 (ms) ≒ 33fps
 
-// スクロールフェーズのレイアウト (16px フォント、本文エリア縦中央)
-//   NEWS_BODY_Y=22, NEWS_BODY_H=138 → 中央 Y=91 → ベースライン Y=99
-static const int SCROLL_Y_BASELINE = NEWS_BODY_Y + NEWS_BODY_H / 2 + 8;  // = 99
-static const int SCROLL_CLEAR_TOP  = SCROLL_Y_BASELINE - 16;              // = 83
-static const int SCROLL_CLEAR_H    = 26;                                  // px
+// 電光掲示板エリアのレイアウト (16px フォント、NEWS_TICKER_Y=114, NEWS_TICKER_H=46)
+//   ベースライン = 上端 + 高さ/2 + 8 (16px フォントの光学的中心補正)
+static const int TICKER_BASELINE = NEWS_TICKER_Y + NEWS_TICKER_H / 2 + 8;  // = 145
+static const int TICKER_CLEAR_Y  = TICKER_BASELINE - 16;                    // = 129
+static const int TICKER_CLEAR_H  = 24;                                      // px (描画クリア幅)
 
 // ================================================================
 // [内部] UTF-8 として不正なバイト列を '?' に置換
@@ -185,23 +180,23 @@ static void newsFetchTask(void * /*param*/)
 }
 
 // ================================================================
-// [内部] STATIC フェーズ: 12px フォントで折り返し多行描画
+// [内部] 静止エリア: 12px フォントで折り返し多行描画
 //
 // 1文字ずつ行バッファに追加し、幅が bodyW を超えたら改行。
-// maxLines 行まで描画し、溢れた行は次のスクロールフェーズで補完。
+// 最大 NEWS_STATIC_H / lineH = 5 行まで描画する。
+// 溢れた部分は下の電光掲示板エリアのスクロールで補完。
 // ================================================================
 static void drawNewsBody(const char *text)
 {
-  // 本文エリア全体をクリア
-  tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
+  tft.fillRect(0, NEWS_STATIC_Y, SCREEN_W, NEWS_STATIC_H, COL_BG_NEWS);
 
   u8g2.setFontMode(1);
   u8g2.setFont(u8g2_font_b12_t_japanese3);
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setBackgroundColor(COL_BG_NEWS);
 
-  const int lineH    = 16;                   // フォント 12px + 行間 4px
-  const int maxLines = NEWS_BODY_H / lineH;  // 138/16 = 8 行
+  const int lineH    = 16;                    // フォント 12px + 行間 4px
+  const int maxLines = NEWS_STATIC_H / lineH; // 90/16 = 5 行
   const int leftPad  = 4;
   const int bodyW    = SCREEN_W - leftPad * 2;
 
@@ -223,9 +218,8 @@ static void drawNewsBody(const char *text)
 
     int w = u8g2.getUTF8Width(lineBuf);
     if (w > bodyW) {
-      // 幅オーバー: 現在行を確定して次の行へ
       lineBuf[lineLen] = '\0';
-      u8g2.setCursor(leftPad, NEWS_BODY_Y + lineH * (lineCount + 1) - 2);
+      u8g2.setCursor(leftPad, NEWS_STATIC_Y + lineH * (lineCount + 1) - 2);
       u8g2.print(lineBuf);
       lineCount++;
 
@@ -241,24 +235,22 @@ static void drawNewsBody(const char *text)
     i += seqLen;
   }
 
-  // 末尾の残り行を描画
   if (lineLen > 0 && lineCount < maxLines) {
     lineBuf[lineLen] = '\0';
-    u8g2.setCursor(leftPad, NEWS_BODY_Y + lineH * (lineCount + 1) - 2);
+    u8g2.setCursor(leftPad, NEWS_STATIC_Y + lineH * (lineCount + 1) - 2);
     u8g2.print(lineBuf);
   }
 }
 
 // ================================================================
-// [内部] SCROLL フェーズ: 16px フォントで電光掲示板スタイル描画
+// [内部] 電光掲示板エリア: 16px フォントで横スクロール描画
 //
-// テキスト行 1 行分 (SCROLL_CLEAR_H px) だけクリアして効率化。
+// TICKER_CLEAR_H px 分だけクリアして再描画 (エリア全体より高速)。
 // 可視範囲外の文字は幅計算のみ行いレンダリングをスキップ。
-// 左端にかかる文字は Adafruit_GFX がピクセル単位でクリップする。
 // ================================================================
 static void drawScrollBody(const char *text)
 {
-  tft.fillRect(0, SCROLL_CLEAR_TOP, SCREEN_W, SCROLL_CLEAR_H, COL_BG_NEWS);
+  tft.fillRect(0, TICKER_CLEAR_Y, SCREEN_W, TICKER_CLEAR_H, COL_BG_NEWS);
 
   u8g2.setFontMode(1);
   u8g2.setFont(u8g2_font_b16_t_japanese3);
@@ -280,8 +272,8 @@ static void drawScrollBody(const char *text)
     int cw = u8g2.getUTF8Width(tmp);
 
     if (x + cw > 0) {
-      if (x >= SCREEN_W) break;   // 右端を超えたら以降は不要
-      u8g2.setCursor(x, SCROLL_Y_BASELINE);
+      if (x >= SCREEN_W) break;
+      u8g2.setCursor(x, TICKER_BASELINE);
       u8g2.print(tmp);
     }
 
@@ -318,7 +310,7 @@ static void drawNewsTitleBar()
 
 // ================================================================
 // [内部] スクロール状態を初期化 (Mutex 保持状態で呼ぶこと)
-// 16px フォントで全幅を計測し、右端から開始
+// 16px フォントで全幅を計測し、画面右端から開始
 // ================================================================
 static void initScroll()
 {
@@ -330,15 +322,16 @@ static void initScroll()
 
 // ================================================================
 // ニュース画面を描画する (公開API)
-// 呼び出すと常に STATIC フェーズから開始する。
+//
+// 上部静止エリアと下部電光掲示板を両方描画し、スクロールを初期化。
 // ================================================================
 void drawNewsScreen()
 {
   tft.fillScreen(COL_BG_NEWS);
   drawNewsTitleBar();
 
-  displayPhase  = NewsPhase::STATIC;
-  staticStartMs = millis();
+  // 静止エリアと電光掲示板エリアの仕切り線
+  tft.drawFastHLine(0, NEWS_DIVIDER_Y, SCREEN_W, ST77XX_WHITE);
 
   if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
     if (newsCount == 0) {
@@ -347,87 +340,54 @@ void drawNewsScreen()
       u8g2.setFont(u8g2_font_b12_t_japanese3);
       u8g2.setForegroundColor(ST77XX_WHITE);
       u8g2.setBackgroundColor(COL_BG_NEWS);
-      u8g2.setCursor(8, NEWS_BODY_Y + 30);
+      u8g2.setCursor(8, NEWS_STATIC_Y + 30);
       u8g2.print("ニュース取得中...");
     } else {
       waitingForNews = false;
       if (newsIndex < 0)          newsIndex = newsCount - 1;
       if (newsIndex >= newsCount) newsIndex = 0;
-      drawNewsBody(newsItems[newsIndex]);
+
+      drawNewsBody(newsItems[newsIndex]);   // 上部: 静止表示
+      initScroll();
+      drawScrollBody(newsItems[newsIndex]); // 下部: スクロール初期フレーム
     }
     xSemaphoreGive(newsMutex);
   }
 }
 
 // ================================================================
-// 表示更新 (loop() からニュース画面表示中のみ毎回呼ぶ)
+// スクロール更新 (loop() からニュース画面表示中のみ毎回呼ぶ)
 //
-// ─ STATIC フェーズ ─────────────────────────────────────────────
-//   折り返し多行テキストを 30 秒間静止表示。
-//   経過後、本文エリアをクリアして SCROLL フェーズへ移行。
-//
-// ─ SCROLL フェーズ ─────────────────────────────────────────────
-//   16px フォントで横スクロール (≒33fps)。
-//   テキストが左端を抜けたら次の見出しの STATIC フェーズへ移行。
+// 電光掲示板エリアだけを毎フレーム更新する (静止エリアは触らない)。
+// テキストが左端を抜けたら drawNewsScreen() で次の見出しへ切替。
 // ================================================================
 void updateNewsAutoPaging()
 {
   unsigned long now = millis();
 
-  // ─── ニュースが初めて届いたとき (取得中 → 実データへ切替) ────
+  // ニュースが初めて届いたとき (取得中 → 実データへ切替)
   if (waitingForNews && newsCount > 0) {
     waitingForNews = false;
-    newsIndex      = 0;
-    displayPhase   = NewsPhase::STATIC;
-    staticStartMs  = now;
-    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
-    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      drawNewsBody(newsItems[newsIndex]);
-      xSemaphoreGive(newsMutex);
-    }
-    drawNewsTitleBar();
+    newsIndex = 0;
+    drawNewsScreen();
     return;
   }
 
   if (newsCount == 0) return;
 
-  // ─── STATIC フェーズ ──────────────────────────────────────────
-  if (displayPhase == NewsPhase::STATIC) {
-    if (now - staticStartMs < STATIC_DURATION_MS) return;
-
-    // 30 秒経過 → SCROLL フェーズへ
-    displayPhase = NewsPhase::SCROLL;
-    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
-    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      initScroll();
-      drawScrollBody(newsItems[newsIndex]);
-      xSemaphoreGive(newsMutex);
-    }
-    return;
-  }
-
-  // ─── SCROLL フェーズ ──────────────────────────────────────────
   if (now - lastScrollMs < SCROLL_TICK_MS) return;
   lastScrollMs = now;
 
   scrollX -= SCROLL_SPEED_PX;
 
-  // テキストが完全に左端を抜けたら次の見出し → STATIC へ
+  // テキストが完全に左端を抜けたら次の見出しへ
   if (scrollX < -scrollTextW) {
-    newsIndex     = (newsIndex + 1) % newsCount;
-    displayPhase  = NewsPhase::STATIC;
-    staticStartMs = now;
-
-    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
-    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      drawNewsBody(newsItems[newsIndex]);
-      xSemaphoreGive(newsMutex);
-    }
-    drawNewsTitleBar();
+    newsIndex = (newsIndex + 1) % newsCount;
+    drawNewsScreen();
     return;
   }
 
-  // 通常スクロールフレーム: テキスト行のみ再描画
+  // 電光掲示板エリアのみ再描画 (静止エリアはそのまま)
   if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
     drawScrollBody(newsItems[newsIndex]);
     xSemaphoreGive(newsMutex);
@@ -436,7 +396,6 @@ void updateNewsAutoPaging()
 
 // ================================================================
 // 次の見出しへ手動で進める (NEXT 短押し)
-// STATIC フェーズから開始する。
 // ================================================================
 void nextNewsPage()
 {
