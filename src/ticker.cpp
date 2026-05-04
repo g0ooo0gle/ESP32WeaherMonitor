@@ -1,19 +1,23 @@
 /**
  * ESP32 Weather Station - ニュース画面 実装
  *
- * [レイアウト 案A: 見出し + description を1ページに表示]
- *   Y=  0〜19 : タイトルバー "ニュース 3/12"
- *   Y= 20     : 白区切り線
- *   Y= 22〜?  : 見出し (シアン, 最大2行)
- *   Y= ?+2    : グレー区切り線
- *   Y= ?+5〜  : description (白, 最大6行)
+ * [表示フロー]
+ *   1. STATIC フェーズ (30秒):
+ *        12px フォントで折り返し多行表示。見出しを静止して読む。
+ *        長い見出しは末尾が切れることがあるが、次フェーズで補完。
+ *   2. SCROLL フェーズ:
+ *        16px フォントで電光掲示板スタイルの横スクロール。
+ *        全文が流れ終わったら次の見出しの STATIC フェーズへ移行。
  *
- * [RSS 解析]
- *   <item> ブロック単位で title と description を取得。
- *   description は CDATA / HTML タグ / XMLエンティティを cleanXmlText() でクリーニング。
+ * [利点]
+ *   ・短い見出し: 30秒で全文一覧 → スクロールで再確認
+ *   ・長い見出し: 切れた部分もスクロールで確認可能
+ *   ・スクロール中は文字が大きく読みやすい
  *
  * [タスク間データ共有]
- *   newsItems[] / newsDescs[] : Mutex (newsMutex) で保護
+ *   newsItems[]  : 取得済みの見出し配列 (共有)
+ *   newsCount    : 取得済み件数 (共有)
+ *   newsMutex    : 上記の保護
  */
 
 #include "ticker.h"
@@ -23,18 +27,45 @@
 #include <HTTPClient.h>
 
 // ================================================================
-// 共有データ
+// 共有データ (タスクとメインの両方からアクセス)
 // ================================================================
 static char newsItems[NEWS_MAX_ITEMS][NEWS_TITLE_MAX];
-static char newsDescs[NEWS_MAX_ITEMS][NEWS_DESC_MAX];
 static int  newsCount = 0;
 
 static SemaphoreHandle_t newsMutex = nullptr;
-static int               newsIndex = 0;
-static unsigned long     lastNewsPageChange = 0;
+
+static int newsIndex = 0;
 
 // ================================================================
-// UTF-8 として不正なバイト列を '?' に置換
+// 表示フェーズ管理
+// ================================================================
+enum class NewsPhase { STATIC, SCROLL };
+
+static NewsPhase     displayPhase   = NewsPhase::STATIC;
+static unsigned long staticStartMs  = 0;      // STATIC フェーズ開始時刻
+static bool          waitingForNews = false;  // ニュース取得待ちフラグ
+
+// 静止表示時間: 30 秒
+static const unsigned long STATIC_DURATION_MS = 30000UL;
+
+// ================================================================
+// スクロール状態 (SCROLL フェーズのみで使用)
+// ================================================================
+static int           scrollX      = 0;   // 現在のスクロール X 座標 (px)
+static int           scrollTextW  = 0;   // 見出し全幅 (16px フォントで計測)
+static unsigned long lastScrollMs = 0;   // 前回スクロール更新時刻
+
+static const int SCROLL_SPEED_PX = 2;   // 1 ティックあたりの移動量 (px)
+static const int SCROLL_TICK_MS  = 30;  // スクロール更新間隔 (ms) ≒ 33fps
+
+// スクロールフェーズのレイアウト (16px フォント、本文エリア縦中央)
+//   NEWS_BODY_Y=22, NEWS_BODY_H=138 → 中央 Y=91 → ベースライン Y=99
+static const int SCROLL_Y_BASELINE = NEWS_BODY_Y + NEWS_BODY_H / 2 + 8;  // = 99
+static const int SCROLL_CLEAR_TOP  = SCROLL_Y_BASELINE - 16;              // = 83
+static const int SCROLL_CLEAR_H    = 26;                                  // px
+
+// ================================================================
+// [内部] UTF-8 として不正なバイト列を '?' に置換
 // ================================================================
 static void sanitizeUtf8(char *buf)
 {
@@ -59,100 +90,50 @@ static void sanitizeUtf8(char *buf)
 }
 
 // ================================================================
-// XML テキストのクリーニング
-//   1. CDATA ラッパーを除去
-//   2. HTML タグ (<...>) を除去
-//   3. XML エンティティを展開
-//   4. 改行をスペースに変換して trim
+// [内部] XML から <title> タグを順番に抽出して newsItems[] に格納
 // ================================================================
-static void cleanXmlText(String &s)
-{
-  // CDATA アンラップ
-  int cdStart = s.indexOf("<![CDATA[");
-  if (cdStart >= 0) {
-    int cdEnd = s.indexOf("]]>", cdStart);
-    s = (cdEnd >= 0) ? s.substring(cdStart + 9, cdEnd)
-                     : s.substring(cdStart + 9);
-  }
-
-  // HTML タグ除去
-  String result;
-  result.reserve(s.length());
-  bool inTag = false;
-  for (int i = 0; i < (int)s.length(); i++) {
-    char c = s[i];
-    if      (c == '<') { inTag = true;  continue; }
-    else if (c == '>') { inTag = false; continue; }
-    else if (!inTag)   result += c;
-  }
-  s = result;
-
-  // XML エンティティ展開
-  s.replace("&amp;",  "&");
-  s.replace("&lt;",   "<");
-  s.replace("&gt;",   ">");
-  s.replace("&quot;", "\"");
-  s.replace("&apos;", "'");
-  s.replace("&nbsp;", " ");
-  s.replace("&#13;",  "");
-  s.replace("&#10;",  " ");
-  s.replace("\r",     "");
-  s.replace("\n",     " ");
-
-  s.trim();
-}
-
-// ================================================================
-// <item> ブロックから title と description を抽出
-// ================================================================
-static void extractItemsFromRss(const String &xml)
+static void extractTitlesFromRss(const String &xml)
 {
   newsCount = 0;
   int searchFrom = 0;
+  int titleCount = 0;
 
   while (newsCount < NEWS_MAX_ITEMS)
   {
-    int itemStart = xml.indexOf("<item>", searchFrom);
-    if (itemStart == -1) break;
-    int itemEnd = xml.indexOf("</item>", itemStart);
-    if (itemEnd == -1) break;
+    int start = xml.indexOf("<title>", searchFrom);
+    if (start == -1) break;
+    start += 7;
 
-    String item = xml.substring(itemStart + 6, itemEnd);
+    int end = xml.indexOf("</title>", start);
+    if (end == -1) break;
 
-    int ts = item.indexOf("<title>");
-    int te = item.indexOf("</title>");
-    int ds = item.indexOf("<description>");
-    int de = item.indexOf("</description>");
-
-    if (ts != -1 && te != -1 && ts < te) {
-      String title = item.substring(ts + 7, te);
-      cleanXmlText(title);
+    if (titleCount > 0)   // 0 件目はチャンネル名なのでスキップ
+    {
+      String title = xml.substring(start, end);
+      title.replace("&amp;",  "&");
+      title.replace("&lt;",   "<");
+      title.replace("&gt;",   ">");
+      title.replace("&quot;", "\"");
+      title.replace("&apos;", "'");
+      title.replace("<![CDATA[", "");
+      title.replace("]]>",        "");
+      title.trim();
 
       if (title.length() > 0) {
-        String desc = "";
-        if (ds != -1 && de != -1 && ds < de) {
-          desc = item.substring(ds + 13, de);
-          cleanXmlText(desc);
-        }
-
         strncpy(newsItems[newsCount], title.c_str(), NEWS_TITLE_MAX - 1);
         newsItems[newsCount][NEWS_TITLE_MAX - 1] = '\0';
         sanitizeUtf8(newsItems[newsCount]);
-
-        strncpy(newsDescs[newsCount], desc.c_str(), NEWS_DESC_MAX - 1);
-        newsDescs[newsCount][NEWS_DESC_MAX - 1] = '\0';
-        sanitizeUtf8(newsDescs[newsCount]);
-
         newsCount++;
       }
     }
 
-    searchFrom = itemEnd + 7;
+    titleCount++;
+    searchFrom = end + 8;
   }
 }
 
 // ================================================================
-// NHK RSS 取得
+// [内部・タスクから呼ぶ] NHK RSS を取得
 // ================================================================
 static void fetchNewsImpl()
 {
@@ -176,9 +157,9 @@ static void fetchNewsImpl()
     Serial.printf("[News] RSS取得完了 (%d bytes)\n", xml.length());
 
     if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
-      extractItemsFromRss(xml);
+      extractTitlesFromRss(xml);
       xSemaphoreGive(newsMutex);
-      Serial.printf("[News] %d件 取得\n", newsCount);
+      Serial.printf("[News] 見出し %d件 取得\n", newsCount);
     } else {
       Serial.println(F("[News] Mutex取得失敗、今回はスキップ"));
     }
@@ -191,11 +172,12 @@ static void fetchNewsImpl()
 }
 
 // ================================================================
-// FreeRTOS タスク: Core 0 で5分ごとに RSS 取得
+// FreeRTOS タスク: Core 0 で動作する RSS 取得ループ (5分ごと)
 // ================================================================
 static void newsFetchTask(void * /*param*/)
 {
   fetchNewsImpl();
+
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5UL * 60UL * 1000UL));
     fetchNewsImpl();
@@ -203,31 +185,32 @@ static void newsFetchTask(void * /*param*/)
 }
 
 // ================================================================
-// テキストを自動改行しながら描画し、最終行の下端Y座標を返す
+// [内部] STATIC フェーズ: 12px フォントで折り返し多行描画
 //
-// startY  : 第1行の上端Y
-// maxLines: 最大描画行数
-// color   : 文字色 (RGB565)
-// returns : startY + drawnLines * lineH
+// 1文字ずつ行バッファに追加し、幅が bodyW を超えたら改行。
+// maxLines 行まで描画し、溢れた行は次のスクロールフェーズで補完。
 // ================================================================
-static int drawWrappedText(const char *text, int startY, int maxLines, uint16_t color)
+static void drawNewsBody(const char *text)
 {
-  const int lineH   = 16;   // フォント12px + 行間4px
-  const int leftPad = 4;
-  const int bodyW   = SCREEN_W - leftPad * 2;
+  // 本文エリア全体をクリア
+  tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
 
   u8g2.setFontMode(1);
   u8g2.setFont(u8g2_font_b12_t_japanese3);
-  u8g2.setForegroundColor(color);
+  u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setBackgroundColor(COL_BG_NEWS);
 
-  char lineBuf[128];
+  const int lineH    = 16;                   // フォント 12px + 行間 4px
+  const int maxLines = NEWS_BODY_H / lineH;  // 138/16 = 8 行
+  const int leftPad  = 4;
+  const int bodyW    = SCREEN_W - leftPad * 2;
+
+  char lineBuf[NEWS_TITLE_MAX];
   int  lineLen   = 0;
   int  lineCount = 0;
-  int  i         = 0;
+  int  i = 0;
 
-  while (text[i] != '\0' && lineCount < maxLines)
-  {
+  while (text[i] != '\0' && lineCount < maxLines) {
     unsigned char c = (unsigned char)text[i];
     int seqLen = 1;
     if      ((c & 0xE0) == 0xC0) seqLen = 2;
@@ -235,16 +218,14 @@ static int drawWrappedText(const char *text, int startY, int maxLines, uint16_t 
     else if ((c & 0xF8) == 0xF0) seqLen = 4;
 
     if (lineLen + seqLen >= (int)sizeof(lineBuf) - 1) break;
-
     for (int k = 0; k < seqLen; k++) lineBuf[lineLen + k] = text[i + k];
     lineBuf[lineLen + seqLen] = '\0';
 
     int w = u8g2.getUTF8Width(lineBuf);
-
     if (w > bodyW) {
-      // 幅オーバー → 現在の行を確定して次の行へ
+      // 幅オーバー: 現在行を確定して次の行へ
       lineBuf[lineLen] = '\0';
-      u8g2.setCursor(leftPad, startY + lineH * (lineCount + 1) - 2);
+      u8g2.setCursor(leftPad, NEWS_BODY_Y + lineH * (lineCount + 1) - 2);
       u8g2.print(lineBuf);
       lineCount++;
 
@@ -257,46 +238,60 @@ static int drawWrappedText(const char *text, int startY, int maxLines, uint16_t 
     } else {
       lineLen += seqLen;
     }
-
     i += seqLen;
   }
 
-  // 末尾の残り
+  // 末尾の残り行を描画
   if (lineLen > 0 && lineCount < maxLines) {
     lineBuf[lineLen] = '\0';
-    u8g2.setCursor(leftPad, startY + lineH * (lineCount + 1) - 2);
+    u8g2.setCursor(leftPad, NEWS_BODY_Y + lineH * (lineCount + 1) - 2);
     u8g2.print(lineBuf);
-    lineCount++;
   }
-
-  return startY + lineCount * lineH;
 }
 
 // ================================================================
-// 本文エリア描画: 見出し(シアン) + 区切り線 + description(白)
+// [内部] SCROLL フェーズ: 16px フォントで電光掲示板スタイル描画
+//
+// テキスト行 1 行分 (SCROLL_CLEAR_H px) だけクリアして効率化。
+// 可視範囲外の文字は幅計算のみ行いレンダリングをスキップ。
+// 左端にかかる文字は Adafruit_GFX がピクセル単位でクリップする。
 // ================================================================
-static void drawNewsBody(const char *title, const char *desc)
+static void drawScrollBody(const char *text)
 {
-  tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
+  tft.fillRect(0, SCROLL_CLEAR_TOP, SCREEN_W, SCROLL_CLEAR_H, COL_BG_NEWS);
 
-  // 見出し (最大2行)
-  int sepY = drawWrappedText(title, NEWS_BODY_Y, 2, ST77XX_CYAN);
+  u8g2.setFontMode(1);
+  u8g2.setFont(u8g2_font_b16_t_japanese3);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setBackgroundColor(COL_BG_NEWS);
 
-  // グレー区切り線
-  sepY += 2;
-  tft.drawFastHLine(0, sepY, SCREEN_W, 0x4208);
-  int descY = sepY + 3;
+  int x = scrollX;
+  int i = 0;
 
-  // description
-  if (desc && desc[0] != '\0') {
-    int maxLines = (SCREEN_H - descY) / 16;
-    if (maxLines > 6) maxLines = 6;
-    drawWrappedText(desc, descY, maxLines, ST77XX_WHITE);
+  while (text[i] != '\0') {
+    unsigned char c = (unsigned char)text[i];
+    int seqLen = 1;
+    if      ((c & 0xE0) == 0xC0) seqLen = 2;
+    else if ((c & 0xF0) == 0xE0) seqLen = 3;
+    else if ((c & 0xF8) == 0xF0) seqLen = 4;
+
+    char tmp[8] = {};
+    for (int k = 0; k < seqLen; k++) tmp[k] = text[i + k];
+    int cw = u8g2.getUTF8Width(tmp);
+
+    if (x + cw > 0) {
+      if (x >= SCREEN_W) break;   // 右端を超えたら以降は不要
+      u8g2.setCursor(x, SCROLL_Y_BASELINE);
+      u8g2.print(tmp);
+    }
+
+    x += cw;
+    i += seqLen;
   }
 }
 
 // ================================================================
-// タイトルバー描画 ("ニュース 3/12")
+// [内部] タイトルバーを描画 ("ニュース 3/12")
 // ================================================================
 static void drawNewsTitleBar()
 {
@@ -322,15 +317,32 @@ static void drawNewsTitleBar()
 }
 
 // ================================================================
-// ニュース画面描画 (公開 API)
+// [内部] スクロール状態を初期化 (Mutex 保持状態で呼ぶこと)
+// 16px フォントで全幅を計測し、右端から開始
+// ================================================================
+static void initScroll()
+{
+  u8g2.setFont(u8g2_font_b16_t_japanese3);
+  scrollTextW  = u8g2.getUTF8Width(newsItems[newsIndex]);
+  scrollX      = SCREEN_W;
+  lastScrollMs = millis();
+}
+
+// ================================================================
+// ニュース画面を描画する (公開API)
+// 呼び出すと常に STATIC フェーズから開始する。
 // ================================================================
 void drawNewsScreen()
 {
   tft.fillScreen(COL_BG_NEWS);
   drawNewsTitleBar();
 
+  displayPhase  = NewsPhase::STATIC;
+  staticStartMs = millis();
+
   if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
     if (newsCount == 0) {
+      waitingForNews = true;
       u8g2.setFontMode(1);
       u8g2.setFont(u8g2_font_b12_t_japanese3);
       u8g2.setForegroundColor(ST77XX_WHITE);
@@ -338,29 +350,93 @@ void drawNewsScreen()
       u8g2.setCursor(8, NEWS_BODY_Y + 30);
       u8g2.print("ニュース取得中...");
     } else {
+      waitingForNews = false;
       if (newsIndex < 0)          newsIndex = newsCount - 1;
       if (newsIndex >= newsCount) newsIndex = 0;
-
-      drawNewsBody(newsItems[newsIndex], newsDescs[newsIndex]);
+      drawNewsBody(newsItems[newsIndex]);
     }
     xSemaphoreGive(newsMutex);
   }
-
-  lastNewsPageChange = millis();
 }
 
 // ================================================================
-// 自動ページ切替 (loop() からニュース画面表示中のみ呼ぶ)
+// 表示更新 (loop() からニュース画面表示中のみ毎回呼ぶ)
+//
+// ─ STATIC フェーズ ─────────────────────────────────────────────
+//   折り返し多行テキストを 30 秒間静止表示。
+//   経過後、本文エリアをクリアして SCROLL フェーズへ移行。
+//
+// ─ SCROLL フェーズ ─────────────────────────────────────────────
+//   16px フォントで横スクロール (≒33fps)。
+//   テキストが左端を抜けたら次の見出しの STATIC フェーズへ移行。
 // ================================================================
 void updateNewsAutoPaging()
 {
-  if (millis() - lastNewsPageChange < newsPageInterval) return;
-  if (newsCount > 0) newsIndex = (newsIndex + 1) % newsCount;
-  drawNewsScreen();
+  unsigned long now = millis();
+
+  // ─── ニュースが初めて届いたとき (取得中 → 実データへ切替) ────
+  if (waitingForNews && newsCount > 0) {
+    waitingForNews = false;
+    newsIndex      = 0;
+    displayPhase   = NewsPhase::STATIC;
+    staticStartMs  = now;
+    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
+    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      drawNewsBody(newsItems[newsIndex]);
+      xSemaphoreGive(newsMutex);
+    }
+    drawNewsTitleBar();
+    return;
+  }
+
+  if (newsCount == 0) return;
+
+  // ─── STATIC フェーズ ──────────────────────────────────────────
+  if (displayPhase == NewsPhase::STATIC) {
+    if (now - staticStartMs < STATIC_DURATION_MS) return;
+
+    // 30 秒経過 → SCROLL フェーズへ
+    displayPhase = NewsPhase::SCROLL;
+    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
+    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      initScroll();
+      drawScrollBody(newsItems[newsIndex]);
+      xSemaphoreGive(newsMutex);
+    }
+    return;
+  }
+
+  // ─── SCROLL フェーズ ──────────────────────────────────────────
+  if (now - lastScrollMs < SCROLL_TICK_MS) return;
+  lastScrollMs = now;
+
+  scrollX -= SCROLL_SPEED_PX;
+
+  // テキストが完全に左端を抜けたら次の見出し → STATIC へ
+  if (scrollX < -scrollTextW) {
+    newsIndex     = (newsIndex + 1) % newsCount;
+    displayPhase  = NewsPhase::STATIC;
+    staticStartMs = now;
+
+    tft.fillRect(0, NEWS_BODY_Y, SCREEN_W, NEWS_BODY_H, COL_BG_NEWS);
+    if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      drawNewsBody(newsItems[newsIndex]);
+      xSemaphoreGive(newsMutex);
+    }
+    drawNewsTitleBar();
+    return;
+  }
+
+  // 通常スクロールフレーム: テキスト行のみ再描画
+  if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    drawScrollBody(newsItems[newsIndex]);
+    xSemaphoreGive(newsMutex);
+  }
 }
 
 // ================================================================
-// 次の見出しへ
+// 次の見出しへ手動で進める (NEXT 短押し)
+// STATIC フェーズから開始する。
 // ================================================================
 void nextNewsPage()
 {
@@ -370,7 +446,7 @@ void nextNewsPage()
 }
 
 // ================================================================
-// 前の見出しへ
+// 前の見出しへ戻す
 // ================================================================
 void prevNewsPage()
 {
@@ -380,7 +456,7 @@ void prevNewsPage()
 }
 
 // ================================================================
-// 初期化 (setup() で1回だけ呼ぶ)
+// ニュース機能の初期化 (setup() で1回)
 // ================================================================
 void setupNews()
 {
@@ -390,10 +466,13 @@ void setupNews()
     return;
   }
 
-  newsCount = 0;
+  newsCount      = 0;
+  scrollX        = 0;
+  scrollTextW    = 0;
+  waitingForNews = false;
+
   for (int i = 0; i < NEWS_MAX_ITEMS; i++) {
     newsItems[i][0] = '\0';
-    newsDescs[i][0] = '\0';
   }
 
   xTaskCreatePinnedToCore(
