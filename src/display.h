@@ -1,12 +1,8 @@
 /**
- * ESP32 Weather Station - 描画機能 ヘッダ
+ * display.h - 天気画面描画ヘッダ
  *
- * [今回の変更点]
- *   - drawNewsScreen() / drawWeatherScreen() を新設
- *     画面切替時にどちらかを呼ぶ。
- *   - 旧 drawWeatherInfo() は drawWeatherScreen() の別名として残します
- *     (既存コードからの呼び出しを変えなくてよいように)
- *   - 日本語フォントは weather.cpp と同じく japanese3 系で統一
+ * WEATHER 画面を構成するエリア（時計・現在天気・詳細）の
+ * 描画関数と、関連する状態変数を公開します。
  */
 
 #ifndef DISPLAY_H
@@ -21,7 +17,7 @@
 extern int      cityIndex;
 extern float    currentTemp;
 extern int      currentWeatherCode;
-extern uint16_t currentBgColor;   // 現在の天気背景色（時計エリア・差分描画に使用）
+extern uint16_t currentBgColor;
 
 // ------------------------------------------------------------------
 // 差分描画キャッシュ
@@ -49,28 +45,22 @@ inline void clearArea(int y, int h, uint16_t color = ST77XX_BLACK)
 }
 
 // ------------------------------------------------------------------
-// WEATHER画面の各エリア描画関数
+// WEATHER 画面の各エリア描画関数
 // ------------------------------------------------------------------
 
-/** 時計＋都市名 */
+/** 時計＋都市名エリア（差分検出付き） */
 void drawClockCity();
 
-/** 現在天気エリア (アイコン+気温+詳細) */
+/** 現在天気エリア（アイコン・気温・テキスト） */
 void drawCurrentWeather();
 
-/** 詳細エリア (週間 or 毎時を切替) */
+/** 詳細エリア（週間 or 毎時をモードに応じて切替） */
 void drawDetailArea();
 
-/**
- * WEATHER画面全体を再描画
- * 旧名 drawWeatherInfo() のまま（既存呼び出し維持）
- */
+/** WEATHER 画面全体を再描画 */
 void drawWeatherInfo();
 
-/** drawWeatherInfo の別名（読みやすさ優先で main から呼ぶ用） */
-inline void drawWeatherScreen() { drawWeatherInfo(); }
-
-/** 起動時に1回だけ呼ぶ静的要素描画 (区切り線など) */
+/** 起動時に 1 回だけ呼ぶ静的要素描画（区切り線など） */
 void drawStaticElements();
 
 /**

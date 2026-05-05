@@ -1,9 +1,8 @@
 /**
- * ESP32 Weather Station - ネットワーク・通信機能 ヘッダ
+ * network.h - ネットワーク・通信機能ヘッダ
  *
- * [今回の変更点]
- *   - updateHourlyForecast() を新設（Open-Meteo hourly API）
- *     現在時刻＋未来5時間の計6時間分の気温・天気コードを取得します。
+ * WiFi 接続、NTP 時刻同期、Open-Meteo API による天気データ取得と
+ * Core 0 での非同期取得タスクを提供します。
  */
 
 #ifndef NETWORK_H
@@ -18,13 +17,13 @@
 bool setupWiFi();
 
 // ------------------------------------------------------------------
-// NTP による時刻同期設定
+// NTP による時刻同期（完了まで最大 20 秒待機）
 // ------------------------------------------------------------------
 void setupNTP();
 
 // ------------------------------------------------------------------
 // 現在天気データを取得
-// 戻り値: データが実際に変化した場合 true
+// 戻り値: データが変化した場合 true
 // ------------------------------------------------------------------
 bool updateWeather();
 
@@ -34,22 +33,18 @@ bool updateWeather();
 bool updateWeeklyForecast();
 
 // ------------------------------------------------------------------
-// 毎時天気予報データを取得（新規）
-// 現在時刻〜未来5時間 (計6時間分) の気温と天気コードを取得します。
+// 毎時天気予報データを取得
+// 現在時刻から 6 時間分の気温と天気コードを取得します。
 // ------------------------------------------------------------------
 bool updateHourlyForecast();
 
 // ------------------------------------------------------------------
-// 非同期天気取得 (Core 0 タスク)
+// 非同期天気取得タスク (Core 0)
 //
 // [使い方]
 //   1. setup() 末尾で startWeatherFetchTask() を呼ぶ
 //   2. 取得したいときに requestWeatherFetch(flags) を呼ぶ
 //   3. loop() で weatherFetchReady を確認 → drawWeatherInfo() を呼ぶ
-//
-// [利点]
-//   HTTP 取得が Core 0 で走るため、loop() (Core 1) はブロックしない。
-//   ボタン応答・ニューススクロールが常にスムーズに動作する。
 // ------------------------------------------------------------------
 #define FETCH_CURRENT  0x01  // 現在天気
 #define FETCH_WEEKLY   0x02  // 週間予報
@@ -58,13 +53,13 @@ bool updateHourlyForecast();
 /** 取得中フラグ (Core 0 が true に、完了後 false に戻す) */
 extern volatile bool    weatherFetchBusy;
 
-/** 更新完了フラグ (bitmask: FETCH_xxx)。loop() が読み取って 0 にクリアする */
+/** 更新完了フラグ (bitmask)。loop() が読み取って 0 にクリアする */
 extern volatile uint8_t weatherFetchReady;
 
 /** Core 0 天気取得タスクを起動（setup() 最後に呼ぶ） */
 void startWeatherFetchTask();
 
-/** 取得を予約する（Core 0 タスクが空き次第実行） */
+/** 取得を予約する（スレッドセーフ） */
 void requestWeatherFetch(uint8_t flags);
 
 #endif // NETWORK_H

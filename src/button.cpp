@@ -1,19 +1,22 @@
 /**
- * ESP32 Weather Station - 物理ボタン制御 実装
+ * button.cpp - 物理ボタン制御実装
  *
- * [3ボタン構成・短押しのみ]
- *   SCREEN (GPIO  0) : 天気 ⇄ ニュース 切替
- *   MODE   (GPIO 35) : 地方巡回 ⇄ 自分の都市 切替（天気画面のみ有効）
- *   NEXT   (GPIO 34) : 次へ（コンテキスト依存）
+ * 3 ボタン・短押しのみのシンプルな操作体系です。
  *
- * [長押し廃止の理由]
- *   2ボタン×短押し/長押しの組み合わせは直感的でなかったため、
- *   3ボタン短押しのみに統一してシンプル化。
+ *   ボタン  GPIO  役割
+ *   ────────────────────────────────────────────
+ *   SCREEN    0   天気 ⇄ ニュース 切替
+ *   MODE     35   地方巡回 ⇄ 自分の都市 切替（天気画面のみ）
+ *   NEXT     34   次へ（コンテキスト依存）
+ *
+ * [GPIO 34/35 について]
+ *   入力専用ピンのため INPUT_PULLUP は動作しません。
+ *   10kΩ 外付けプルアップ（→ 3.3V）を接続してください。
  */
 
 #include "button.h"
 #include "display.h"
-#include "network.h"   // requestWeatherFetch, FETCH_xxx
+#include "network.h"
 #include "ticker.h"
 #include "cities.h"
 #include "settings.h"
@@ -21,9 +24,9 @@
 // ================================================================
 // 状態変数の実体定義
 // ================================================================
-Screen      currentScreen = Screen::WEATHER;         // 起動時は天気画面
-DisplayMode currentMode   = DisplayMode::ALL_CITIES; // 起動時は地方巡回
-SubView     currentSub    = SubView::WEEKLY;          // 起動時は週間表示
+Screen      currentScreen = Screen::WEATHER;
+DisplayMode currentMode   = DisplayMode::ALL_CITIES;
+SubView     currentSub    = SubView::WEEKLY;
 
 // ================================================================
 // 内部状態
@@ -53,10 +56,11 @@ static void screenPress()
     currentScreen = Screen::WEATHER;
     Serial.println(F("[Button] SCREEN: ニュース → 天気"));
     drawWeatherInfo();
-    // NEWS 中は天気取得を止めていたので復帰時に最新データを取得
+    // NEWS 表示中は天気の定期取得を停止しているため、復帰時に即時取得する
     requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
-    lastFetchAttempt = millis();
-    lastWeeklyFetch  = millis();
+    unsigned long now = millis();
+    lastFetchAttempt = now;
+    lastWeeklyFetch  = now;
   }
 }
 
@@ -91,8 +95,8 @@ static void modePress()
 
 // ================================================================
 // NEXT ボタン: コンテキスト依存の「次へ」
-//   ニュース画面          → 次の見出し
-//   天気 / 地方巡回モード  → 次の都市（地方フィルタに従う）
+//   ニュース画面           → 次の見出し
+//   天気 / 地方巡回モード  → 次の都市
 //   天気 / 自分の都市モード → 週間 ⇄ 毎時 切替
 // ================================================================
 static void nextPress()
@@ -108,11 +112,10 @@ static void nextPress()
     Serial.printf("[Button] NEXT: 次の都市 → %s\n", cities[cityIndex].name);
     drawWeatherInfo();
     showLoadingOverlay("天気 取得中...");
-    // タイマーをリセットして直後の二重フェッチを防ぐ
-    unsigned long now2 = millis();
-    lastFetchAttempt = now2;
-    lastWeeklyFetch  = now2;
-    lastCitySwitch   = now2;
+    unsigned long now = millis();
+    lastFetchAttempt = now;
+    lastWeeklyFetch  = now;
+    lastCitySwitch   = now;
     requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   } else {
     if (currentSub == SubView::WEEKLY) {
@@ -124,21 +127,13 @@ static void nextPress()
     } else {
       currentSub = SubView::WEEKLY;
       Serial.println(F("[Button] NEXT: 毎時 → 週間"));
-      drawDetailArea();   // 週間データはキャッシュ済み・即時描画
+      drawDetailArea();
     }
   }
 }
 
 // ================================================================
-// [内部ヘルパー] 短押し判定（長押しなし版）
-//
-//   引数:
-//     btnState   : 今回読み取ったピン状態 (HIGH/LOW)
-//     prevState  : 前回のピン状態 (参照渡しで更新)
-//     pressStart : 押し始め時刻 (参照)
-//     lastAction : 直前のアクション時刻 (チャタリング防止)
-//     onPress    : 押下時に呼ぶコールバック
-//     now        : 現在時刻 millis()
+// [内部] 短押し判定ヘルパー
 // ================================================================
 static void handleButton(int btnState, int &prevState,
                          unsigned long &pressStart,
@@ -146,14 +141,12 @@ static void handleButton(int btnState, int &prevState,
                          void (*onPress)(),
                          unsigned long now)
 {
-  // 押し始め (HIGH→LOW)
   if (prevState == HIGH && btnState == LOW) {
     if (now - lastAction >= BTN_DEBOUNCE_MS) {
       pressStart = now;
     }
   }
 
-  // 離した瞬間 (LOW→HIGH) かつデバウンス時間を満たしていれば発火
   if (prevState == LOW && btnState == HIGH) {
     if (pressStart != 0 && now - pressStart >= BTN_DEBOUNCE_MS) {
       lastAction = now;
@@ -167,13 +160,14 @@ static void handleButton(int btnState, int &prevState,
 
 // ================================================================
 // ボタン GPIO ピンの初期化
+// GPIO 34/35 は INPUT_PULLUP 非対応のため INPUT を使用します。
 // ================================================================
 void setupButtons()
 {
   pinMode(BTN_SCREEN_PIN, INPUT_PULLUP);
-  pinMode(BTN_MODE_PIN,   INPUT_PULLUP);
-  pinMode(BTN_NEXT_PIN,   INPUT_PULLUP);   // GPIO 34: 外付けプルアップ推奨
-  Serial.printf("[Button] 初期化完了: SCREEN=GPIO%d, MODE=GPIO%d, NEXT=GPIO%d\n",
+  pinMode(BTN_MODE_PIN,   INPUT);   // GPIO 35: 外付けプルアップ使用
+  pinMode(BTN_NEXT_PIN,   INPUT);   // GPIO 34: 外付けプルアップ必須
+  Serial.printf("[Button] 初期化: SCREEN=GPIO%d, MODE=GPIO%d, NEXT=GPIO%d\n",
                 BTN_SCREEN_PIN, BTN_MODE_PIN, BTN_NEXT_PIN);
 }
 

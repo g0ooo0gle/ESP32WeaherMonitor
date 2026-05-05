@@ -1,22 +1,25 @@
 /**
- * ESP32 Weather Station - 設定管理 実装
+ * settings.cpp - 設定管理実装
+ *
+ * NVS (Preferences) による設定の永続化と
+ * ブラウザ経由の Web 設定ページを提供します。
  *
  * [NVS 名前空間 "wx_cfg"]
  *   "myCity"    : 登録都市インデックス (int)
- *   "region"    : 巡回する地方フィルタ (int, -1=全国)
+ *   "region"    : 巡回する地方フィルタ (int, -1 = 全国)
  *   "useCustom" : カスタム都市を使用するか (int, 0/1)
  *   "cusName"   : カスタム都市名 (String)
  *   "cusLat"    : カスタム緯度 (float)
  *   "cusLon"    : カスタム経度 (float)
  *
  * [Web 設定ページ]
- *   GET  /       → 設定フォームを表示
- *   POST /save   → 設定を NVS へ保存し、GET / へリダイレクト
+ *   GET  /      → 設定フォームを表示
+ *   POST /save  → 設定を NVS へ保存し GET / へリダイレクト
  */
 
 #include "settings.h"
-#include "display.h"   // cityIndex, prevTimeStr
-#include "button.h"    // currentMode, DisplayMode
+#include "display.h"
+#include "button.h"
 
 #include <Preferences.h>
 #include <WebServer.h>
@@ -26,11 +29,11 @@
 // 設定変数の実体
 // ================================================================
 int  myCityIndex     = 12;           // デフォルト: 東京
-int  regionFilter    = FILTER_ALL;   // デフォルト: 全国
+int  regionFilter    = FILTER_ALL;
 bool settingsChanged = false;
 
 char  customCityName[32] = "";
-float customCityLat      = 35.6895f;   // デフォルト: 東京
+float customCityLat      = 35.6895f;
 float customCityLon      = 139.6917f;
 bool  useCustomCity      = false;
 
@@ -40,18 +43,39 @@ bool  useCustomCity      = false;
 static Preferences prefs;
 static WebServer   server(80);
 
-static const char* NVS_NS          = "wx_cfg";
-static const char* KEY_CITY        = "myCity";
-static const char* KEY_REGION      = "region";
-static const char* KEY_USE_CUSTOM  = "useCustom";
-static const char* KEY_CUS_NAME    = "cusName";
-static const char* KEY_CUS_LAT     = "cusLat";
-static const char* KEY_CUS_LON     = "cusLon";
+static const char* NVS_NS         = "wx_cfg";
+static const char* KEY_CITY       = "myCity";
+static const char* KEY_REGION     = "region";
+static const char* KEY_USE_CUSTOM = "useCustom";
+static const char* KEY_CUS_NAME   = "cusName";
+static const char* KEY_CUS_LAT    = "cusLat";
+static const char* KEY_CUS_LON    = "cusLon";
 
 static const char* REGION_LABELS[] = {
   "北海道・東北地方", "関東地方", "中部地方",
   "関西地方", "中国・四国地方", "九州・沖縄地方"
 };
+
+// ================================================================
+// [内部] HTML 特殊文字をエスケープしてセキュアに出力する
+// ================================================================
+static String htmlEscape(const char *s)
+{
+  String r;
+  r.reserve(strlen(s) + 16);
+  while (*s) {
+    switch (*s) {
+      case '&':  r += F("&amp;");  break;
+      case '<':  r += F("&lt;");   break;
+      case '>':  r += F("&gt;");   break;
+      case '"':  r += F("&quot;"); break;
+      case '\'': r += F("&#39;");  break;
+      default:   r += *s;          break;
+    }
+    s++;
+  }
+  return r;
+}
 
 // ================================================================
 // 設定の読み込み
@@ -97,7 +121,7 @@ void saveSettings()
 
 // ================================================================
 // 自分の都市モードのアクセサ
-// useCustomCity && SINGLE モードのときカスタム値を返す
+// useCustomCity かつ SINGLE モードのときカスタム値を返す
 // ================================================================
 const char* getActiveName()
 {
@@ -163,9 +187,8 @@ static void handleRoot()
   bool saved = server.hasArg("saved");
 
   String html;
-  html.reserve(4500);
+  html.reserve(4800);
 
-  // ---- HTML ヘッダ + CSS ----
   html = F("<!DOCTYPE html><html lang='ja'><head>"
            "<meta charset='UTF-8'>"
            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -196,10 +219,10 @@ static void handleRoot()
            ".note{margin-top:28px;padding:10px 14px;background:#1e2a3a;"
            "border-radius:6px;color:#90a4ae;font-size:12px;line-height:1.6}"
            "</style></head><body>"
-           "<h1>⚙ 天気設定</h1>"
+           "<h1>&#x2699; 天気設定</h1>"
            "<p class='sub'>ESP32 Weather Monitor</p>");
 
-  if (saved) html += F("<div class='ok'>✓ 設定を保存しました</div>");
+  if (saved) html += F("<div class='ok'>&#x2713; 設定を保存しました</div>");
 
   html += F("<form method='POST' action='/save'>");
 
@@ -226,12 +249,12 @@ static void handleRoot()
   }
   html += F("</select></div>");
 
-  // ---- カスタム都市入力欄 ----
+  // ---- カスタム都市入力欄（value はエスケープして XSS を防ぐ）----
   html += F("<div id='dc'>"
             "<small>都市名</small>"
             "<input class='ti' type='text' name='custom_name'"
             " placeholder='例: 川崎市' maxlength='31' value='");
-  html += customCityName;
+  html += htmlEscape(customCityName);
   html += F("'>"
             "<div class='lrow'>"
             "<div><small>緯度</small>"
@@ -275,16 +298,14 @@ static void handleRoot()
   }
   html += F("</select>");
 
-  // ---- 保存ボタン ----
   html += F("<button class='btn' type='submit'>保存する</button></form>");
 
-  // ---- ボタン操作の説明 ----
   html += F("<div class='note'>"
             "<b>ボタン操作（短押しのみ）</b><br>"
-            "SCREEN &nbsp;→ 天気 ⇄ ニュース<br>"
-            "MODE &nbsp;&nbsp;&nbsp;→ 地方巡回 ⇄ 自分の都市<br>"
+            "SCREEN &nbsp;→ 天気 &#8644; ニュース<br>"
+            "MODE &nbsp;&nbsp;&nbsp;→ 地方巡回 &#8644; 自分の都市<br>"
             "NEXT（天気/巡回中）&nbsp;&nbsp;&nbsp;→ 次の都市<br>"
-            "NEXT（天気/自分の都市）→ 週間 ⇄ 毎時<br>"
+            "NEXT（天気/自分の都市）→ 週間 &#8644; 毎時<br>"
             "NEXT（ニュース）&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ 次の見出し"
             "</div>");
 
@@ -298,18 +319,15 @@ static void handleRoot()
 // ================================================================
 static void handleSave()
 {
-  // ---- 自分の都市 ----
   String cityMode = server.hasArg("city_mode") ? server.arg("city_mode") : "preset";
   useCustomCity = (cityMode == "custom");
 
   if (!useCustomCity) {
-    // 登録都市
     if (server.hasArg("city")) {
       int v = server.arg("city").toInt();
       if (v >= 0 && v < cityCount) myCityIndex = v;
     }
   } else {
-    // カスタム都市
     if (server.hasArg("custom_name")) {
       String cn = server.arg("custom_name");
       cn.trim();
@@ -325,7 +343,6 @@ static void handleSave()
     }
   }
 
-  // ---- 巡回する地方 ----
   if (server.hasArg("region")) {
     int v = server.arg("region").toInt();
     if (v >= FILTER_ALL && v <= FILTER_KYUSHU) regionFilter = v;
@@ -333,17 +350,13 @@ static void handleSave()
 
   saveSettings();
 
-  // cityIndex を即時調整
   if (currentMode == DisplayMode::SINGLE) {
     if (!useCustomCity) cityIndex = myCityIndex;
-    // カスタムの場合 cityIndex はそのまま（座標はアクセサで返す）
   } else {
     if (!cityMatchesFilter(cityIndex)) cityIndex = getFirstCityInRegion();
   }
 
-  // 都市名表示キャッシュをリセット → drawClockCity() が必ず再描画
   prevTimeStr[0] = '\0';
-
   settingsChanged = true;
 
   server.sendHeader("Location", "/?saved=1");
@@ -351,7 +364,7 @@ static void handleSave()
 }
 
 // ================================================================
-// Web サーバー初期化
+// Web サーバー初期化・クライアント処理
 // ================================================================
 void setupWebServer()
 {
@@ -362,9 +375,6 @@ void setupWebServer()
                 WiFi.localIP().toString().c_str());
 }
 
-// ================================================================
-// Web サーバー クライアント処理（loop() から毎回呼ぶ）
-// ================================================================
 void handleWebServer()
 {
   server.handleClient();
