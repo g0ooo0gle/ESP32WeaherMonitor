@@ -13,7 +13,7 @@
 
 #include "button.h"
 #include "display.h"
-#include "network.h"
+#include "network.h"   // requestWeatherFetch, FETCH_xxx
 #include "ticker.h"
 #include "cities.h"
 #include "settings.h"
@@ -68,19 +68,21 @@ static void modePress()
     cityIndex   = myCityIndex;
     Serial.printf("[Button] MODE: 地方巡回 → 自分の都市 (%s)\n",
                   cities[cityIndex].name);
-    updateWeather();
-    if (currentSub == SubView::WEEKLY) updateWeeklyForecast();
-    else                                updateHourlyForecast();
+    drawWeatherInfo();
+    showLoadingOverlay("天気 取得中...");
+    uint8_t flags = FETCH_CURRENT |
+                    ((currentSub == SubView::HOURLY) ? FETCH_HOURLY : FETCH_WEEKLY);
+    requestWeatherFetch(flags);
   } else {
     currentMode = DisplayMode::ALL_CITIES;
     cityIndex   = getFirstCityInRegion();
+    currentSub  = SubView::WEEKLY;
     Serial.printf("[Button] MODE: 自分の都市 → 地方巡回 (%s〜)\n",
                   cities[cityIndex].name);
-    updateWeather();
-    updateWeeklyForecast();
+    drawWeatherInfo();
+    showLoadingOverlay("天気 取得中...");
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   }
-
-  drawWeatherInfo();
 }
 
 // ================================================================
@@ -100,18 +102,21 @@ static void nextPress()
   if (currentMode == DisplayMode::ALL_CITIES) {
     cityIndex = getNextCityInRegion(cityIndex);
     Serial.printf("[Button] NEXT: 次の都市 → %s\n", cities[cityIndex].name);
-    updateWeather();
     drawWeatherInfo();
+    showLoadingOverlay("天気 取得中...");
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   } else {
     if (currentSub == SubView::WEEKLY) {
       currentSub = SubView::HOURLY;
       Serial.println(F("[Button] NEXT: 週間 → 毎時"));
-      updateHourlyForecast();
+      drawWeatherInfo();
+      showLoadingOverlay("毎時天気 取得中...");
+      requestWeatherFetch(FETCH_HOURLY);
     } else {
       currentSub = SubView::WEEKLY;
       Serial.println(F("[Button] NEXT: 毎時 → 週間"));
+      drawDetailArea();   // 週間データはキャッシュ済み・即時描画
     }
-    drawDetailArea();
   }
 }
 

@@ -16,9 +16,10 @@
 // ================================================================
 // 状態管理変数の実体定義
 // ================================================================
-int   cityIndex          = 0;
-float currentTemp        = 0;
-int   currentWeatherCode = 0;
+int      cityIndex          = 0;
+float    currentTemp        = 0;
+int      currentWeatherCode = 0;
+uint16_t currentBgColor     = COL_BG_CLEAR;  // 初期値: 晴れ色
 
 // ================================================================
 // 差分検出用キャッシュの実体
@@ -53,10 +54,11 @@ void drawClockCity()
   if (strcmp(timeStr, prevTimeStr) == 0 && prevCityIndex == cityIndex && prevMode == currentMode) return;
 
   strcpy(prevTimeStr, timeStr);
-  prevMode = currentMode;
+  prevCityIndex = cityIndex;
+  prevMode      = currentMode;
 
-  // エリア塗りつぶし
-  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, COL_BG_CLOCK);
+  // 時計エリアを天気背景色で塗りつぶし（天気色と統一）
+  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, currentBgColor);
 
   // ---- 時刻 (helvB18, °対応フォント) ----
   u8g2.setFontMode(1);
@@ -116,13 +118,17 @@ void drawDetailArea()
 // ================================================================
 void drawWeatherInfo()
 {
-  uint16_t bg = getBgColor(currentWeatherCode);
+  currentBgColor = getBgColor(currentWeatherCode);
+  uint16_t bg    = currentBgColor;
 
-  // 時計エリアの下から画面下端までを天気色で塗りつぶし
+  // 画面全体を天気色で塗りつぶし（時計エリアも含む）
   tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, SCREEN_H - AREA_CLOCK_Y, bg);
 
   u8g2.setBackgroundColor(bg);
   u8g2.setFontMode(1);
+
+  // 差分キャッシュをクリアして時計を強制再描画（fillRect で消去されるため）
+  prevTimeStr[0] = '\0';
 
   // 各エリアを描画
   drawClockCity();
@@ -140,6 +146,34 @@ void drawWeatherInfo()
 
   Serial.printf("[Display] %s %.1f°C code=%d\n",
                 getActiveName(), currentTemp, currentWeatherCode);
+}
+
+// ================================================================
+// ローディングオーバーレイを画面中央に表示
+//
+// 次の drawWeatherInfo() / drawNewsScreen() 呼び出しで自然に消える。
+// ================================================================
+void showLoadingOverlay(const char* msg)
+{
+  const int boxW = 110, boxH = 44, boxR = 5;
+  const int boxX = (SCREEN_W - boxW) / 2;   // = 9
+  const int boxY = (SCREEN_H - boxH) / 2;   // = 58
+
+  tft.fillRoundRect(boxX, boxY, boxW, boxH, boxR, 0x2104);
+  tft.drawRoundRect(boxX, boxY, boxW, boxH, boxR, ST77XX_WHITE);
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setFontMode(0);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setBackgroundColor(0x2104);
+
+  int tw = u8g2.getUTF8Width(msg);
+  int tx = boxX + (boxW - tw) / 2;
+  if (tx < boxX + 2) tx = boxX + 2;
+
+  u8g2.setCursor(tx, boxY + 30);
+  u8g2.print(msg);
+  u8g2.setFontMode(1);  // 透過モードに戻す
 }
 
 // ================================================================

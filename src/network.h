@@ -39,4 +39,32 @@ bool updateWeeklyForecast();
 // ------------------------------------------------------------------
 bool updateHourlyForecast();
 
+// ------------------------------------------------------------------
+// 非同期天気取得 (Core 0 タスク)
+//
+// [使い方]
+//   1. setup() 末尾で startWeatherFetchTask() を呼ぶ
+//   2. 取得したいときに requestWeatherFetch(flags) を呼ぶ
+//   3. loop() で weatherFetchReady を確認 → drawWeatherInfo() を呼ぶ
+//
+// [利点]
+//   HTTP 取得が Core 0 で走るため、loop() (Core 1) はブロックしない。
+//   ボタン応答・ニューススクロールが常にスムーズに動作する。
+// ------------------------------------------------------------------
+#define FETCH_CURRENT  0x01  // 現在天気
+#define FETCH_WEEKLY   0x02  // 週間予報
+#define FETCH_HOURLY   0x04  // 毎時予報
+
+/** 取得中フラグ (Core 0 が true に、完了後 false に戻す) */
+extern volatile bool    weatherFetchBusy;
+
+/** 更新完了フラグ (bitmask: FETCH_xxx)。loop() が読み取って 0 にクリアする */
+extern volatile uint8_t weatherFetchReady;
+
+/** Core 0 天気取得タスクを起動（setup() 最後に呼ぶ） */
+void startWeatherFetchTask();
+
+/** 取得を予約する（Core 0 タスクが空き次第実行） */
+void requestWeatherFetch(uint8_t flags);
+
 #endif // NETWORK_H

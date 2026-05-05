@@ -18,9 +18,10 @@
 // ------------------------------------------------------------------
 // 状態管理変数
 // ------------------------------------------------------------------
-extern int   cityIndex;
-extern float currentTemp;
-extern int   currentWeatherCode;
+extern int      cityIndex;
+extern float    currentTemp;
+extern int      currentWeatherCode;
+extern uint16_t currentBgColor;   // 現在の天気背景色（時計エリア・差分描画に使用）
 
 // ------------------------------------------------------------------
 // 差分描画キャッシュ
@@ -71,5 +72,11 @@ inline void drawWeatherScreen() { drawWeatherInfo(); }
 
 /** 起動時に1回だけ呼ぶ静的要素描画 (区切り線など) */
 void drawStaticElements();
+
+/**
+ * ローディングオーバーレイを画面中央に表示する。
+ * 次の drawWeatherInfo() / drawNewsScreen() 呼び出しで自動的に消える。
+ */
+void showLoadingOverlay(const char* msg);
 
 #endif // DISPLAY_H

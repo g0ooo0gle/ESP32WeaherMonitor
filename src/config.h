@@ -115,7 +115,7 @@ const unsigned long hourlyFetchInterval = 30UL * 60UL * 1000UL;
 // 全国巡回モードでの都市切替間隔: 20秒
 const unsigned long citySwitchInterval  = 20000UL;
 
-// 時計更新間隔: 30秒
-const unsigned long clockInterval       = 30000UL;
+// 時計更新間隔: 1秒チェック（差分検出により実際の描画は分変化時のみ）
+const unsigned long clockInterval       = 1000UL;
 
 #endif // CONFIG_H

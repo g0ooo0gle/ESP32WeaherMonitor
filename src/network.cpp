@@ -324,3 +324,56 @@ bool updateHourlyForecast()
   Serial.printf("[Hourly] 取得完了: %d時間分\n", hourlyHours);
   return true;
 }
+
+// ================================================================
+// 非同期天気取得 (Core 0 タスク)
+//
+// [設計方針]
+//   - HTTP 取得は Core 0 のみで実行し、SPI 表示は Core 1 のみで実行。
+//   - requestWeatherFetch() で要求フラグ (volatile) を立てる。
+//   - weatherFetchTask() がフラグを確認して順次 HTTP 取得を実行。
+//   - 完了後 weatherFetchReady に bitmask をセット。
+//   - loop() が weatherFetchReady を見て drawWeatherInfo() を呼ぶ。
+//
+// [メモリ安全性]
+//   currentTemp / currentWeatherCode は 32bit アトミック書き込み (Xtensa LX6)。
+//   配列データ (weeklyForecast 等) は __sync_synchronize() で順序保証。
+// ================================================================
+volatile bool    weatherFetchBusy  = false;
+volatile uint8_t weatherFetchReady = 0;
+static volatile uint8_t weatherFetchReq = 0;
+
+void requestWeatherFetch(uint8_t flags)
+{
+  weatherFetchReq |= flags;
+}
+
+static void weatherFetchTask(void*)
+{
+  for (;;) {
+    uint8_t req = weatherFetchReq;
+    if (req) {
+      weatherFetchReq  = 0;
+      weatherFetchBusy = true;
+
+      uint8_t ready = 0;
+      if (req & FETCH_CURRENT) { if (updateWeather())        ready |= FETCH_CURRENT; }
+      if (req & FETCH_WEEKLY)  { if (updateWeeklyForecast()) ready |= FETCH_WEEKLY;  }
+      if (req & FETCH_HOURLY)  { if (updateHourlyForecast()) ready |= FETCH_HOURLY;  }
+
+      __sync_synchronize();         // 書き込み完了後に ready フラグをセット
+      weatherFetchReady |= ready;
+      weatherFetchBusy   = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+void startWeatherFetchTask()
+{
+  xTaskCreatePinnedToCore(
+    weatherFetchTask, "weatherFetch",
+    8192, nullptr, 1, nullptr, 0
+  );
+  Serial.println(F("[Weather] 非同期取得タスク起動 (Core 0)"));
+}

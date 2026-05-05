@@ -110,15 +110,7 @@ void setup()
   // ---- 起動時の都市を地方フィルタに合わせて初期化 ----
   cityIndex = getFirstCityInRegion();
 
-  // ---- タイマー初期化 ----
-  unsigned long t0 = millis();
-  lastFetchAttempt = t0 - fetchInterval;
-  lastWeeklyFetch  = t0 - weeklyFetchInterval;
-  lastHourlyFetch  = t0 - hourlyFetchInterval;
-  lastCitySwitch   = t0;
-  lastClockUpdate  = t0;
-
-  // ---- 初回データ取得と描画 ----
+  // ---- 初回データ取得と描画 (同期・起動時のみ) ----
   Serial.println(F("[Setup] 初回天気データ取得..."));
   updateWeather();
   updateWeeklyForecast();
@@ -127,6 +119,20 @@ void setup()
   // ---- ニュース機能初期化 (Core 0 タスク起動) ----
   Serial.println(F("[Setup] ニュース機能初期化..."));
   setupNews();
+
+  // ---- 天気非同期取得タスク起動 (Core 0) ----
+  Serial.println(F("[Setup] 天気非同期取得タスク起動..."));
+  startWeatherFetchTask();
+
+  // タイマーを現在時刻から開始（起動直後の二重取得を防ぐ）
+  {
+    unsigned long tNow = millis();
+    lastFetchAttempt = tNow;
+    lastWeeklyFetch  = tNow;
+    lastHourlyFetch  = tNow;
+    lastCitySwitch   = tNow;
+    lastClockUpdate  = tNow;
+  }
 
   Serial.println(F("[Setup] 完了。loop() に移行。"));
   Serial.printf("[Setup] 空きヒープ: %u bytes\n", ESP.getFreeHeap());
@@ -156,7 +162,7 @@ void loop()
 {
   unsigned long now = millis();
 
-  // ---- ボタン処理 (両画面共通) ----
+  // ---- ボタン処理 (両画面共通・毎回優先実行) ----
   updateButtons();
 
   // ---- Web 設定サーバー ----
@@ -165,12 +171,25 @@ void loop()
   // ---- Web 設定保存後の即時反映 ----
   if (settingsChanged) {
     settingsChanged = false;
-    Serial.println(F("[Loop] 設定変更を反映: 天気データ更新..."));
-    updateWeather();
-    updateWeeklyForecast();
-    if (currentScreen == Screen::WEATHER) drawWeatherInfo();
+    Serial.println(F("[Loop] 設定変更検知: 非同期天気取得を要求..."));
+    if (currentScreen == Screen::WEATHER) {
+      drawWeatherInfo();
+      showLoadingOverlay("設定を適用中...");
+    }
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
     lastFetchAttempt = now;
     lastWeeklyFetch  = now;
+  }
+
+  // ---- 天気データ更新完了 → 再描画 ----
+  // Core 0 タスクが完了フラグを立てたら天気画面を更新する。
+  // ローディングオーバーレイも drawWeatherInfo() の全画面再描画で自然に消える。
+  uint8_t ready = weatherFetchReady;
+  if (ready) {
+    weatherFetchReady = 0;
+    if (currentScreen == Screen::WEATHER) {
+      drawWeatherInfo();
+    }
   }
 
   // ====================================================================
@@ -178,7 +197,7 @@ void loop()
   // ====================================================================
   if (currentScreen == Screen::WEATHER)
   {
-    // 時計更新 (差分描画なので頻繁に呼んでもコストは低い)
+    // 時計更新: 1秒ごとにチェック、差分検出により分変化時のみ実際に描画
     if (now - lastClockUpdate >= clockInterval) {
       drawClockCity();
       lastClockUpdate = now;
@@ -186,65 +205,49 @@ void loop()
   }
   else  // Screen::NEWS
   {
-    // 5秒ごとに次の見出しへ自動切替
     updateNewsAutoPaging();
   }
 
   // ====================================================================
-  // データ更新 (画面に関係なく裏で動かす)
-  // → ニュース画面から戻ったときに最新データが表示される
+  // データ更新スケジュール（Core 0 へ非同期委譲）
+  // HTTP 取得は Core 0 が担うため、loop() (Core 1) はブロックしない。
   // ====================================================================
 
-  // 全国モード時のみ都市自動切替（地方フィルタに従って次の都市へ）
+  // 全国モード: 20秒ごとに次の都市へ切替し、取得を予約
   if (currentMode == DisplayMode::ALL_CITIES) {
     if (now - lastCitySwitch >= citySwitchInterval) {
       cityIndex = getNextCityInRegion(cityIndex);
       Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
 
-      updateWeather();
-      updateWeeklyForecast();
-
-      // WEATHER画面表示中なら即時描画、NEWS画面なら描画スキップ
-      if (currentScreen == Screen::WEATHER) {
-        drawWeatherInfo();
-      }
+      // 都市名を即時反映（天気データは取得後に更新）
+      if (currentScreen == Screen::WEATHER) drawClockCity();
 
       prevCityIndex    = cityIndex;
       lastCitySwitch   = now;
       lastFetchAttempt = now;
       lastWeeklyFetch  = now;
+      requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
     }
   }
 
-  // 現在天気の定期更新 (15分ごと)
+  // 現在天気の定期更新 (15分)
   if (now - lastFetchAttempt >= fetchInterval) {
-    Serial.println(F("[Loop] 現在天気定期更新..."));
-    bool changed = updateWeather();
-    if (changed && currentScreen == Screen::WEATHER) {
-      drawWeatherInfo();
-    }
+    Serial.println(F("[Loop] 現在天気定期更新を予約..."));
+    requestWeatherFetch(FETCH_CURRENT);
     lastFetchAttempt = now;
   }
 
   // 詳細データの定期更新
   if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
-    // 1都市モード×毎時表示中: 30分ごとに毎時データ
     if (now - lastHourlyFetch >= hourlyFetchInterval) {
-      Serial.println(F("[Loop] 毎時天気定期更新..."));
-      bool changed = updateHourlyForecast();
-      if (changed && currentScreen == Screen::WEATHER) {
-        drawDetailArea();
-      }
+      Serial.println(F("[Loop] 毎時天気定期更新を予約..."));
+      requestWeatherFetch(FETCH_HOURLY);
       lastHourlyFetch = now;
     }
   } else {
-    // それ以外: 1時間ごとに週間データ
     if (now - lastWeeklyFetch >= weeklyFetchInterval) {
-      Serial.println(F("[Loop] 週間天気定期更新..."));
-      bool changed = updateWeeklyForecast();
-      if (changed && currentScreen == Screen::WEATHER) {
-        drawDetailArea();
-      }
+      Serial.println(F("[Loop] 週間天気定期更新を予約..."));
+      requestWeatherFetch(FETCH_WEEKLY);
       lastWeeklyFetch = now;
     }
   }
