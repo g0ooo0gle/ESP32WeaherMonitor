@@ -70,6 +70,7 @@ static void screenPress()
 static void modePress()
 {
   if (currentScreen != Screen::WEATHER) return;
+  if (weatherFetchBusy) return;  // フェッチ中は受け付けない
 
   if (currentMode == DisplayMode::ALL_CITIES) {
     currentMode    = DisplayMode::SINGLE;
@@ -123,6 +124,7 @@ static void nextPress()
       }
     } else {
       // 毎時 → 次の都市（週間から）
+      if (weatherFetchBusy) return;  // フェッチ中は受け付けない
       currentSub       = SubView::WEEKLY;
       cityIndex        = getNextCityInRegion(cityIndex);
       lastFetchAttempt = now;
