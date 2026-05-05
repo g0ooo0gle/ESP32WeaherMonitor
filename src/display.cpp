@@ -47,7 +47,7 @@ void drawClockCity()
   if (!getLocalTime(&ti)) return;
 
   char timeStr[16];
-  strftime(timeStr, sizeof(timeStr), "%H:%M", &ti);
+  strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &ti);
 
   if (strcmp(timeStr, prevTimeStr) == 0 &&
       prevCityIndex == cityIndex &&
@@ -57,24 +57,39 @@ void drawClockCity()
   prevCityIndex = cityIndex;
   prevMode      = currentMode;
 
-  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, currentBgColor);
+  const char *wdays[] = {"日", "月", "火", "水", "木", "金", "土"};
+  char dateStr[20];
+  snprintf(dateStr, sizeof(dateStr), "%d/%d(%s)",
+           ti.tm_mon + 1, ti.tm_mday, wdays[ti.tm_wday]);
 
+  tft.fillRect(0, AREA_CLOCK_Y, SCREEN_W, AREA_CLOCK_H, currentBgColor);
   u8g2.setFontMode(1);
-  u8g2.setFont(u8g2_font_helvB18_tf);
+  u8g2.setBackgroundColor(currentBgColor);
+
+  // 1行目左: 時刻 HH:MM:SS
+  u8g2.setFont(u8g2_font_helvB12_tf);
   u8g2.setForegroundColor(ST77XX_GREEN);
-  u8g2.setCursor(2, AREA_CLOCK_Y + 23);
+  u8g2.setCursor(2, AREA_CLOCK_Y + 14);
   u8g2.print(timeStr);
 
+  // 1行目右: 都市名（右寄せ）
   u8g2.setFont(u8g2_font_b12_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
-  u8g2.setCursor(72, AREA_CLOCK_Y + AREA_CLOCK_H - 8);
+  const char *city = getActiveName();
+  int starW = (currentMode == DisplayMode::SINGLE)
+              ? u8g2.getUTF8Width("\xE2\x98\x85") : 0;
+  int cityW = u8g2.getUTF8Width(city);
+  u8g2.setCursor(SCREEN_W - starW - cityW - 2, AREA_CLOCK_Y + 14);
+  if (currentMode == DisplayMode::SINGLE) u8g2.print("\xE2\x98\x85");
+  u8g2.print(city);
 
-  if (currentMode == DisplayMode::SINGLE) {
-    u8g2.print("\xE2\x98\x85");  // UTF-8 の ★
-  }
-  u8g2.print(getActiveName());
+  // 2行目: 日付
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(0xC618);
+  u8g2.setCursor(2, AREA_CLOCK_Y + AREA_CLOCK_H - 3);
+  u8g2.print(dateStr);
 
-  Serial.printf("[Clock] %s  %s\n", timeStr, getActiveName());
+  Serial.printf("[Clock] %s %s  %s\n", timeStr, dateStr, getActiveName());
 }
 
 // ================================================================
