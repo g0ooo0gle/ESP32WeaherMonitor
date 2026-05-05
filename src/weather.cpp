@@ -260,7 +260,7 @@ void drawWeeklyForecast(uint16_t bgColor)
 
     drawSmallWeatherIcon(2, rowY, weeklyForecast[i].weatherCode);
 
-    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setFont(u8g2_font_b12_t_japanese3);
     u8g2.setForegroundColor(ST77XX_YELLOW);
     u8g2.setCursor(22, rowY + 11);
     u8g2.print(weeklyForecast[i].label);
@@ -286,8 +286,9 @@ void drawWeeklyForecast(uint16_t bgColor)
     u8g2.setCursor(108, rowY + 10);
     u8g2.print("\xC2\xB0""C");
 
-    if (i < weeklyDays - 1)
-      tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
+    //if (i < weeklyDays - 1){
+    //  tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
+    //}
   }
 }
 
@@ -308,7 +309,7 @@ void drawHourlyForecast(uint16_t bgColor)
   u8g2.setBackgroundColor(bgColor);
 
   if (hourlyHours == 0) {
-    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setFont(u8g2_font_b12_t_japanese3);
     u8g2.setForegroundColor(ST77XX_WHITE);
     u8g2.setCursor(10, AREA_DETAIL_Y + 40);
     u8g2.print("毎時天気 取得中...");
@@ -323,7 +324,7 @@ void drawHourlyForecast(uint16_t bgColor)
 
     drawSmallWeatherIcon(2, rowY, hourlyForecast[i].weatherCode);
 
-    u8g2.setFont(u8g2_font_b12_b_t_japanese3);
+    u8g2.setFont(u8g2_font_b12_t_japanese3);
     u8g2.setForegroundColor(ST77XX_YELLOW);
     u8g2.setCursor(22, rowY + 11);
     u8g2.print(hourlyForecast[i].label);
@@ -340,7 +341,8 @@ void drawHourlyForecast(uint16_t bgColor)
     u8g2.setCursor(100, rowY + 10);
     u8g2.print("\xC2\xB0""C");
 
-    if (i < hourlyHours - 1)
-      tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
+    //if (i < hourlyHours - 1){
+    //  tft.drawFastHLine(20, rowY + rowH - 1, SCREEN_W - 20, 0x2104);
+    //}
   }
 }
