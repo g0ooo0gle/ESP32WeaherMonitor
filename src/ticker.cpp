@@ -7,17 +7,27 @@
  *   │ ニュース            3/12     │  タイトルバー (20px)
  *   ├──────────────────────────────┤  Y= 20
  *   │                              │
- *   │  見出しを折り返し静止表示     │  静止エリア (90px、最大5行)
- *   │  (12px フォント)             │
+ *   │  見出し (タイトル) を折り返し │  静止エリア (90px、最大5行)
+ *   │  静止表示 (12px フォント)    │
  *   │                              │
  *   ├──────────────────────────────┤  Y=112
- *   │ ▶ テキストが右→左へ流れる   │  電光掲示板エリア (46px)
+ *   │ ▶ 記事概要が右→左へ流れる   │  電光掲示板エリア (46px)
  *   └──────────────────────────────┘  Y=160
  *
+ * [スクロール vs 静止]
+ *   静止エリア : newsItems[newsIndex]       = 見出し(タイトル)を折り返し表示
+ *   スクロール : newsDescriptions[newsIndex] = 記事概要(ディスクリプション)を横スクロール
+ *   ディスクリプションが空の場合はタイトルをフォールバックとして使用。
+ *
  * [自動遷移のバグ対策]
- *   scrollX のリセットは drawNewsScreen/redrawNewsContent を呼ぶ前に行う。
+ *   scrollX のリセットは drawNewsScreen/drawNewsPage を呼ぶ前に行う。
  *   これにより、内部の Mutex 取得が遅延しても二重トリガーが起きない。
- *   自動遷移には軽量な redrawNewsContent() を使い fillScreen を省く。
+ *
+ * [マルチコア安全設計]
+ *   newsCount は volatile で宣言し、Core 0/1 間の可視性を保証。
+ *   newsItems/newsDescriptions の読み書きは newsMutex で保護。
+ *   currentScrollText は initScroll() 時に mutex 内でコピーし、
+ *   以降の描画は mutex なしで安全に行える。
  */
 
 #include "ticker.h"
@@ -30,7 +40,8 @@
 // 共有データ (Core 0 タスクとメイン Core 1 の両方からアクセス)
 // ================================================================
 static char newsItems[NEWS_MAX_ITEMS][NEWS_TITLE_MAX];
-static int  newsCount = 0;
+static char newsDescriptions[NEWS_MAX_ITEMS][NEWS_DESC_MAX];
+static volatile int newsCount = 0;
 
 static SemaphoreHandle_t newsMutex = nullptr;
 
@@ -39,23 +50,22 @@ static int newsIndex = 0;
 // ================================================================
 // 電光掲示板スクロール状態
 // ================================================================
-static int           scrollX      = SCREEN_W; // 現在のスクロール X 座標
-static int           scrollTextW  = 0;         // 見出し全幅 (16px フォントで計測)
+static int           scrollX      = SCREEN_W;
+static int           scrollTextW  = 0;
 static unsigned long lastScrollMs = 0;
 
 // スクロール用ローカルコピー (mutex なしで描画できるようにするため)
-// initScroll() 時に newsItems[newsIndex] をコピーし、Phase 1 はこれを使う。
-// RSS 書き込み中でも ticker が止まらない。
-static char currentScrollText[NEWS_TITLE_MAX] = "";
+// initScroll() 時に newsDescriptions[newsIndex] をコピーする。
+static char currentScrollText[NEWS_DESC_MAX] = "";
 
 static bool          waitingForNews   = false;
-static unsigned long scrollPauseEndMs = 0;  // 0 = ポーズなし
+static unsigned long scrollPauseEndMs = 0;
 
-static const int           SCROLL_SPEED_PX     = 2;     // px / ティック
-static const int           SCROLL_TICK_MS       = 40;   // ms / ティック ≒ 25fps (負荷軽減)
-static const unsigned long TRANSITION_PAUSE_MS  = 800UL; // ページ切替前の停止時間
+static const int           SCROLL_SPEED_PX    = 2;
+static const int           SCROLL_TICK_MS      = 40;    // ≒ 25fps
+static const unsigned long TRANSITION_PAUSE_MS = 800UL;
 
-// 電光掲示板エリアのレイアウト (16px フォント, NEWS_TICKER_Y=114, NEWS_TICKER_H=46)
+// 電光掲示板エリアのレイアウト (16px フォント)
 static const int TICKER_BASELINE = NEWS_TICKER_Y + NEWS_TICKER_H / 2 + 8;  // = 145
 static const int TICKER_CLEAR_Y  = TICKER_BASELINE - 16;                    // = 129
 static const int TICKER_CLEAR_H  = 24;
@@ -97,45 +107,88 @@ static void sanitizeUtf8(char *buf)
 }
 
 // ================================================================
-// [内部] XML から <title> タグを抽出して newsItems[] に格納
+// [内部] RSS フィールドをクリーンアップして返す
+//
+//   1. CDATA ラッパー (<![CDATA[...]]>) を除去
+//   2. HTML タグ (<...>) を除去
+//   3. HTML エンティティをデコード
 // ================================================================
-static void extractTitlesFromRss(const String &xml)
+static String cleanRssField(const String &raw)
+{
+  String s = raw;
+  s.replace("<![CDATA[", "");
+  s.replace("]]>",       "");
+
+  // HTML タグ除去
+  String clean;
+  clean.reserve(s.length());
+  bool inTag = false;
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if      (c == '<') { inTag = true;  }
+    else if (c == '>') { inTag = false; }
+    else if (!inTag)   { clean += c;    }
+  }
+
+  // エンティティデコード
+  clean.replace("&amp;",  "&");
+  clean.replace("&lt;",   "<");
+  clean.replace("&gt;",   ">");
+  clean.replace("&quot;", "\"");
+  clean.replace("&apos;", "'");
+  clean.replace("&#160;", " ");
+
+  clean.trim();
+  return clean;
+}
+
+// ================================================================
+// [内部] <item> ブロック単位で title + description を抽出して格納
+//
+// <item>...</item> を繰り返し検索することで、チャンネルレベルの
+// <title>/<description> を完全にスキップできる。
+// ================================================================
+static void extractItemsFromRss(const String &xml)
 {
   newsCount = 0;
   int searchFrom = 0;
-  int titleCount = 0;
 
-  while (newsCount < NEWS_MAX_ITEMS)
-  {
-    int start = xml.indexOf("<title>", searchFrom);
-    if (start == -1) break;
-    start += 7;
+  while (newsCount < NEWS_MAX_ITEMS) {
+    int itemStart = xml.indexOf("<item>", searchFrom);
+    if (itemStart == -1) break;
+    int itemEnd = xml.indexOf("</item>", itemStart);
+    if (itemEnd == -1) break;
 
-    int end = xml.indexOf("</title>", start);
-    if (end == -1) break;
+    String item = xml.substring(itemStart + 6, itemEnd);
 
-    if (titleCount > 0)  // 0 件目はチャンネル名
-    {
-      String title = xml.substring(start, end);
-      title.replace("&amp;",  "&");
-      title.replace("&lt;",   "<");
-      title.replace("&gt;",   ">");
-      title.replace("&quot;", "\"");
-      title.replace("&apos;", "'");
-      title.replace("<![CDATA[", "");
-      title.replace("]]>",        "");
-      title.trim();
+    // ---- タイトル ----
+    int ts = item.indexOf("<title>");
+    int te = item.indexOf("</title>");
+    if (ts == -1 || te == -1 || te <= ts) { searchFrom = itemEnd + 7; continue; }
+    String title = cleanRssField(item.substring(ts + 7, te));
+    if (title.length() == 0) { searchFrom = itemEnd + 7; continue; }
 
-      if (title.length() > 0) {
-        strncpy(newsItems[newsCount], title.c_str(), NEWS_TITLE_MAX - 1);
-        newsItems[newsCount][NEWS_TITLE_MAX - 1] = '\0';
-        sanitizeUtf8(newsItems[newsCount]);
-        newsCount++;
-      }
+    // ---- ディスクリプション ----
+    int ds = item.indexOf("<description>");
+    int de = item.indexOf("</description>");
+    String desc = "";
+    if (ds != -1 && de != -1 && de > ds) {
+      desc = cleanRssField(item.substring(ds + 13, de));
     }
+    if (desc.length() == 0) desc = title;  // 空ならタイトルをフォールバック
 
-    titleCount++;
-    searchFrom = end + 8;
+    // newsItems にタイトルを格納
+    strncpy(newsItems[newsCount], title.c_str(), NEWS_TITLE_MAX - 1);
+    newsItems[newsCount][NEWS_TITLE_MAX - 1] = '\0';
+    sanitizeUtf8(newsItems[newsCount]);
+
+    // newsDescriptions にディスクリプションを格納
+    strncpy(newsDescriptions[newsCount], desc.c_str(), NEWS_DESC_MAX - 1);
+    newsDescriptions[newsCount][NEWS_DESC_MAX - 1] = '\0';
+    sanitizeUtf8(newsDescriptions[newsCount]);
+
+    newsCount++;
+    searchFrom = itemEnd + 7;
   }
 }
 
@@ -163,9 +216,9 @@ static void fetchNewsImpl()
     Serial.printf("[News] RSS取得完了 (%d bytes)\n", xml.length());
 
     if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
-      extractTitlesFromRss(xml);
+      extractItemsFromRss(xml);
       xSemaphoreGive(newsMutex);
-      Serial.printf("[News] 見出し %d件 取得\n", newsCount);
+      Serial.printf("[News] 見出し %d件 取得\n", (int)newsCount);
     } else {
       Serial.println(F("[News] Mutex取得失敗、今回はスキップ"));
     }
@@ -189,7 +242,7 @@ static void newsFetchTask(void * /*param*/)
 }
 
 // ================================================================
-// [内部] 静止エリア: 12px フォントで折り返し多行描画 (最大 5 行)
+// [内部] 静止エリア: 12px フォントで見出し(タイトル)を折り返し多行描画
 // ================================================================
 static void drawNewsBody(const char *text)
 {
@@ -242,9 +295,6 @@ static void drawNewsBody(const char *text)
 
 // ================================================================
 // [内部] 電光掲示板エリア: 16px フォントで横スクロール描画
-//
-// テキスト行 1 行分だけクリアして再描画 (エリア全体より高速)。
-// 可視範囲外の文字は幅計算のみでレンダリングをスキップ。
 // ================================================================
 static void drawScrollBody(const char *text)
 {
@@ -291,7 +341,7 @@ static void drawNewsTitleBar()
 
   if (newsCount > 0) {
     char counter[16];
-    snprintf(counter, sizeof(counter), "%d/%d", newsIndex + 1, newsCount);
+    snprintf(counter, sizeof(counter), "%d/%d", newsIndex + 1, (int)newsCount);
     u8g2.setFont(u8g2_font_helvB10_tf);
     u8g2.setForegroundColor(ST77XX_WHITE);
     int cw = u8g2.getUTF8Width(counter);
@@ -305,30 +355,26 @@ static void drawNewsTitleBar()
 // ================================================================
 // [内部] スクロール状態を初期化 (Mutex 保持状態で呼ぶこと)
 //
-// newsItems[newsIndex] を currentScrollText にコピーする。
+// newsDescriptions[newsIndex] を currentScrollText にコピーする。
 // 以降の drawScrollBody() は currentScrollText を使うため、
 // mutex なしで安全に呼べる (RSS 書き込み中でも止まらない)。
 // ================================================================
 static void initScroll()
 {
   u8g2.setFont(u8g2_font_b16_t_japanese3);
-  scrollTextW = u8g2.getUTF8Width(newsItems[newsIndex]);
-  strncpy(currentScrollText, newsItems[newsIndex], NEWS_TITLE_MAX - 1);
-  currentScrollText[NEWS_TITLE_MAX - 1] = '\0';
-  // scrollX は呼び出し前に SCREEN_W にリセット済みであること
+  scrollTextW = u8g2.getUTF8Width(newsDescriptions[newsIndex]);
+  strncpy(currentScrollText, newsDescriptions[newsIndex], NEWS_DESC_MAX - 1);
+  currentScrollText[NEWS_DESC_MAX - 1] = '\0';
   lastScrollMs = millis();
 }
 
 // ================================================================
 // [内部] ページ遷移時の画面更新 (mutex 保持状態で呼ぶこと)
-//
-// mutex を外から取得済みの前提で描画する。
-// initScroll() がここで呼ばれるため scrollTextW/currentScrollText が必ず確定する。
 // ================================================================
 static void drawNewsPage()
 {
-  tft.fillRect(0, NEWS_STATIC_Y, SCREEN_W, NEWS_STATIC_H, COL_BG_NEWS);
-  tft.fillRect(0, NEWS_TICKER_Y, SCREEN_W, NEWS_TICKER_H, COL_BG_NEWS);
+  tft.fillRect(0, NEWS_STATIC_Y,  SCREEN_W, NEWS_STATIC_H,  COL_BG_NEWS);
+  tft.fillRect(0, NEWS_TICKER_Y,  SCREEN_W, NEWS_TICKER_H,  COL_BG_NEWS);
   tft.drawFastHLine(0, NEWS_DIVIDER_Y, SCREEN_W, ST77XX_WHITE);
   drawNewsTitleBar();
   if (newsCount > 0) {
@@ -361,12 +407,12 @@ void drawNewsScreen()
     } else {
       waitingForNews = false;
       scrollPauseEndMs = 0;
-      if (newsIndex < 0)          newsIndex = newsCount - 1;
-      if (newsIndex >= newsCount) newsIndex = 0;
+      if (newsIndex < 0)           newsIndex = newsCount - 1;
+      if (newsIndex >= (int)newsCount) newsIndex = 0;
 
       scrollX = SCREEN_W;
       drawNewsBody(newsItems[newsIndex]);
-      initScroll();                            // currentScrollText も更新
+      initScroll();
       drawScrollBody(currentScrollText);
     }
     xSemaphoreGive(newsMutex);
@@ -376,23 +422,11 @@ void drawNewsScreen()
 // ================================================================
 // スクロール更新 (loop() からニュース画面表示中のみ毎回呼ぶ)
 //
-// [3 フェーズ設計 + mutex 安全設計]
-//
+// [3 フェーズ設計]
 //   Phase 0: 初回データ到着待ち
-//     waitingForNews && newsCount > 0 のとき。
-//     mutex を短いタイムアウトで試み、取れなければ次の呼び出しで再試行。
-//
 //   Phase 1: スクロール進行中 (scrollPauseEndMs == 0)
-//     currentScrollText を使って mutex なしで描画 → RSS 取得中でも止まらない。
-//     scrollX が -scrollTextW を下回ったらティッカーをクリアして Phase 2 へ。
-//
-//   Phase 2: ポーズ中 (scrollPauseEndMs != 0 && now < scrollPauseEndMs)
-//     何もせず return。
-//
-//   Phase 3: ポーズ完了 (scrollPauseEndMs != 0 && now >= scrollPauseEndMs)
-//     mutex を取れなければ 200ms 延長して再試行 (newsIndex は変えない)。
-//     mutex 取得成功後に newsIndex を進めて drawNewsPage() を呼ぶ。
-//     → initScroll() が必ず mutex 内で呼ばれるため scrollTextW は常に正確。
+//   Phase 2: ポーズ中
+//   Phase 3: ポーズ完了 → 次ページへ
 // ================================================================
 void updateNewsAutoPaging()
 {
@@ -404,7 +438,7 @@ void updateNewsAutoPaging()
     waitingForNews   = false;
     scrollPauseEndMs = 0;
     newsIndex        = 0;
-    drawNewsPage();                      // mutex 内で scrollX/scrollTextW を確定
+    drawNewsPage();
     xSemaphoreGive(newsMutex);
     return;
   }
@@ -413,23 +447,21 @@ void updateNewsAutoPaging()
 
   // ---- Phase 2 / 3: ポーズ中 / 遷移 ----------------------------------------
   if (scrollPauseEndMs != 0) {
-    if (now < scrollPauseEndMs) return;  // Phase 2: まだ待機中
+    if (now < scrollPauseEndMs) return;
 
-    // Phase 3: RSS 取得が mutex を保持中なら延長して再試行
     if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
-      scrollPauseEndMs = now + 200;      // 200ms 後に再挑戦
+      scrollPauseEndMs = now + 200;
       return;
     }
-    // mutex 取得成功 → newsIndex 進めて確実に再描画
     scrollPauseEndMs = 0;
     newsIndex        = (newsIndex + 1) % newsCount;
-    drawNewsPage();                      // initScroll() は内部で呼ばれる
+    drawNewsPage();
     xSemaphoreGive(newsMutex);
     return;
   }
 
   // ---- Phase 1: スクロール進行中 --------------------------------------------
-  if (now - lastScrollMs < SCROLL_TICK_MS) return;
+  if (now - lastScrollMs < (unsigned long)SCROLL_TICK_MS) return;
   lastScrollMs = now;
 
   scrollX -= SCROLL_SPEED_PX;
@@ -440,7 +472,6 @@ void updateNewsAutoPaging()
     return;
   }
 
-  // 通常フレーム: currentScrollText を使って mutex なしで描画
   drawScrollBody(currentScrollText);
 }
 
@@ -479,16 +510,17 @@ void setupNews()
     return;
   }
 
-  newsCount             = 0;
-  scrollX               = SCREEN_W;
-  scrollTextW           = 0;
-  currentScrollText[0]  = '\0';
-  waitingForNews        = false;
-  lastScrollMs          = 0;
-  scrollPauseEndMs      = 0;
+  newsCount            = 0;
+  scrollX              = SCREEN_W;
+  scrollTextW          = 0;
+  currentScrollText[0] = '\0';
+  waitingForNews       = false;
+  lastScrollMs         = 0;
+  scrollPauseEndMs     = 0;
 
   for (int i = 0; i < NEWS_MAX_ITEMS; i++) {
-    newsItems[i][0] = '\0';
+    newsItems[i][0]        = '\0';
+    newsDescriptions[i][0] = '\0';
   }
 
   xTaskCreatePinnedToCore(
