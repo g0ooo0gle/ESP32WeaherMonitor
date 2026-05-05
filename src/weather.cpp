@@ -244,14 +244,15 @@ void drawWeatherIcon(int x, int y, int code)
 //   x= 84 : 最低気温（水色）
 //   x=108 : °C
 // ================================================================
-void drawWeeklyForecast()
+void drawWeeklyForecast(uint16_t bgColor)
 {
   if (weeklyDays == 0) return;
 
-  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, ST77XX_BLACK);
+  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, bgColor);
 
   const int rowH = 13;
   u8g2.setFontMode(1);
+  u8g2.setBackgroundColor(bgColor);
 
   for (int i = 0; i < weeklyDays && i < WEEKLY_DAYS; i++)
   {
@@ -299,12 +300,14 @@ void drawWeeklyForecast()
 //   x= 68 : 気温（現在時刻のみオレンジ）
 //   x=100 : °C
 // ================================================================
-void drawHourlyForecast()
+void drawHourlyForecast(uint16_t bgColor)
 {
-  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, ST77XX_BLACK);
+  tft.fillRect(0, AREA_DETAIL_Y, SCREEN_W, AREA_DETAIL_H, bgColor);
+
+  u8g2.setFontMode(1);
+  u8g2.setBackgroundColor(bgColor);
 
   if (hourlyHours == 0) {
-    u8g2.setFontMode(1);
     u8g2.setFont(u8g2_font_b12_b_t_japanese3);
     u8g2.setForegroundColor(ST77XX_WHITE);
     u8g2.setCursor(10, AREA_DETAIL_Y + 40);
@@ -313,7 +316,6 @@ void drawHourlyForecast()
   }
 
   const int rowH = 13;
-  u8g2.setFontMode(1);
 
   for (int i = 0; i < hourlyHours && i < HOURLY_HOURS; i++)
   {

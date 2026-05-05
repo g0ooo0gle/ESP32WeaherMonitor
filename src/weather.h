@@ -52,11 +52,11 @@ uint16_t getBgColor(int code);
 /** 天気アイコン描画 (36×36px) */
 void drawWeatherIcon(int x, int y, int code);
 
-/** 週間天気を詳細エリアに描画 */
-void drawWeeklyForecast();
+/** 週間天気を詳細エリアに描画（bgColor: 詳細エリアの背景色） */
+void drawWeeklyForecast(uint16_t bgColor);
 
-/** 毎時天気を詳細エリアに描画 */
-void drawHourlyForecast();
+/** 毎時天気を詳細エリアに描画（bgColor: 詳細エリアの背景色） */
+void drawHourlyForecast(uint16_t bgColor);
 
 /** 気温＋°C を描画するヘルパー（° 対応フォント使用） */
 void drawTempWithUnit(int x, int y, float temp, uint16_t color, bool bigFont);

@@ -93,8 +93,13 @@ bool updateWeather()
 
   if (httpCode == HTTP_CODE_OK)
   {
+    // ESP32 HTTPS では getStream() をそのまま渡すと SSL バッファリングの影響で
+    // JSON が途中で途切れることがある。getString() で一括取得してからパースする。
+    String payload = http.getString();
+    http.end();
+
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream());
+    DeserializationError err = deserializeJson(doc, payload);
 
     if (!err)
     {
@@ -118,9 +123,9 @@ bool updateWeather()
   else
   {
     Serial.printf("[Weather] HTTP 失敗 code=%d\n", httpCode);
+    http.end();
   }
 
-  http.end();
   return changed;
 }
 
@@ -155,10 +160,11 @@ bool updateWeeklyForecast()
     return false;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getStream());
+  String payload = http.getString();
   http.end();
 
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
   if (err) {
     Serial.printf("[Weekly] JSON パースエラー: %s\n", err.c_str());
     return false;
@@ -238,10 +244,11 @@ bool updateHourlyForecast()
     return false;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getStream());
+  String payload = http.getString();
   http.end();
 
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
   if (err) {
     Serial.printf("[Hourly] JSON パースエラー: %s\n", err.c_str());
     return false;

@@ -115,7 +115,6 @@ static void nextPress()
     unsigned long now = millis();
     lastFetchAttempt = now;
     lastWeeklyFetch  = now;
-    lastCitySwitch   = now;
     requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   } else {
     if (currentSub == SubView::WEEKLY) {
@@ -141,14 +140,17 @@ static void handleButton(int btnState, int &prevState,
                          void (*onPress)(),
                          unsigned long now)
 {
+  // 立ち下がり: 常に pressStart を記録する（クールダウン中でも記録する）
   if (prevState == HIGH && btnState == LOW) {
-    if (now - lastAction >= BTN_DEBOUNCE_MS) {
-      pressStart = now;
-    }
+    pressStart = now;
   }
 
+  // 立ち上がり: BTN_MIN_HOLD_MS 以上保持 かつ クールダウン経過で発火
   if (prevState == LOW && btnState == HIGH) {
-    if (pressStart != 0 && now - pressStart >= BTN_DEBOUNCE_MS) {
+    if (pressStart != 0
+        && now - pressStart  >= BTN_MIN_HOLD_MS   // ノイズ除去（短すぎる押下を無視）
+        && now - lastAction  >= BTN_DEBOUNCE_MS)  // チャタリング防止
+    {
       lastAction = now;
       onPress();
     }

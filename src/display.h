@@ -33,7 +33,6 @@ extern int   prevWeatherCode;
 extern unsigned long lastFetchAttempt;
 extern unsigned long lastWeeklyFetch;
 extern unsigned long lastHourlyFetch;
-extern unsigned long lastCitySwitch;
 extern unsigned long lastClockUpdate;
 
 // ------------------------------------------------------------------

@@ -30,7 +30,8 @@
 #define BTN_MODE_PIN    35
 #define BTN_NEXT_PIN    34
 
-#define BTN_DEBOUNCE_MS  50
+#define BTN_MIN_HOLD_MS  15   // 実際の押下と見なす最短保持時間（ノイズ除去）
+#define BTN_DEBOUNCE_MS  50   // 連続アクション間の最短インターバル（チャタリング防止）
 
 // ================================================================
 // 画面の種類

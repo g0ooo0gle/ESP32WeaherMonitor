@@ -160,7 +160,6 @@ void setup()
   lastFetchAttempt = tNow;
   lastWeeklyFetch  = tNow;
   lastHourlyFetch  = tNow;
-  lastCitySwitch   = tNow;
   lastClockUpdate  = tNow;
 
   Serial.println(F("[Setup] 完了。loop() に移行。"));
@@ -172,6 +171,7 @@ void setup()
 //
 // [実行方針]
 //   - ボタン処理は両画面共通で毎ループ実行
+//   - 都市の切り替えはボタン操作のみ（自動切り替えなし）
 //   - 天気データ更新は WEATHER 画面表示中にのみ行う
 //     （NEWS 表示中は Core 0 を RSS 取得専用にして HTTP 渋滞を防ぐ。
 //       天気画面へ復帰すると即時取得が走るため鮮度は保たれる）
@@ -235,20 +235,6 @@ void loop()
   // ====================================================================
   if (currentScreen == Screen::WEATHER)
   {
-    // 地方巡回モード: 20 秒ごとに次の都市へ
-    if (currentMode == DisplayMode::ALL_CITIES) {
-      if (now - lastCitySwitch >= citySwitchInterval) {
-        cityIndex = getNextCityInRegion(cityIndex);
-        Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
-        drawClockCity();
-        prevCityIndex    = cityIndex;
-        lastCitySwitch   = now;
-        lastFetchAttempt = now;
-        lastWeeklyFetch  = now;
-        requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
-      }
-    }
-
     // 現在天気の定期更新 (15 分)
     if (now - lastFetchAttempt >= fetchInterval) {
       Serial.println(F("[Loop] 現在天気 定期更新を予約"));

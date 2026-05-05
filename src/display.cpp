@@ -35,7 +35,6 @@ DisplayMode prevMode         = DisplayMode::ALL_CITIES;
 unsigned long lastFetchAttempt = 0;
 unsigned long lastWeeklyFetch  = 0;
 unsigned long lastHourlyFetch  = 0;
-unsigned long lastCitySwitch   = 0;
 unsigned long lastClockUpdate  = 0;
 
 // ================================================================
@@ -100,9 +99,9 @@ void drawCurrentWeather()
 void drawDetailArea()
 {
   if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
-    drawHourlyForecast();
+    drawHourlyForecast(currentBgColor);
   } else {
-    drawWeeklyForecast();
+    drawWeeklyForecast(currentBgColor);
   }
 }
 
