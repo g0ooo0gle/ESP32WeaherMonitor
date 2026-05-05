@@ -301,26 +301,43 @@ static void drawScrollBody(const char *text)
 }
 
 // ================================================================
-// [内部] タイトルバー描画 ("ニュース N/M")
+// [内部] タイトルバー描画 ("ニュース N/M  HH:MM")
 // ================================================================
 static void drawNewsTitleBar()
 {
   tft.fillRect(0, NEWS_TITLE_Y, SCREEN_W, NEWS_TITLE_H, COL_BG_NEWSBAR);
-
   u8g2.setFontMode(1);
+  u8g2.setBackgroundColor(COL_BG_NEWSBAR);
+
+  const int baseY = NEWS_TITLE_Y + 14;
+
+  // 左: "ニュース" ラベル
   u8g2.setFont(u8g2_font_b12_t_japanese3);
   u8g2.setForegroundColor(ST77XX_YELLOW);
-  u8g2.setCursor(4, NEWS_TITLE_Y + 14);
+  int labelW = u8g2.getUTF8Width("ニュース");
+  u8g2.setCursor(4, baseY);
   u8g2.print("ニュース");
 
+  // "ニュース" の直後: N/M カウンター
   if (newsCount > 0) {
-    char counter[16];
+    char counter[12];
     snprintf(counter, sizeof(counter), "%d/%d", newsIndex + 1, (int)newsCount);
     u8g2.setFont(u8g2_font_helvB10_tf);
     u8g2.setForegroundColor(ST77XX_WHITE);
-    int cw = u8g2.getUTF8Width(counter);
-    u8g2.setCursor(SCREEN_W - cw - 4, NEWS_TITLE_Y + 14);
+    u8g2.setCursor(4 + labelW + 2, baseY);
     u8g2.print(counter);
+  }
+
+  // 右寄せ: 時刻 HH:MM
+  struct tm ti;
+  if (getLocalTime(&ti, 0)) {
+    char timeStr[12];
+    strftime(timeStr, sizeof(timeStr), "%H:%M", &ti);
+    u8g2.setFont(u8g2_font_helvB10_tf);
+    u8g2.setForegroundColor(ST77XX_GREEN);
+    int tw = u8g2.getUTF8Width(timeStr);
+    u8g2.setCursor(SCREEN_W - tw - 4, baseY);
+    u8g2.print(timeStr);
   }
 
   tft.drawFastHLine(0, NEWS_LINE_Y, SCREEN_W, ST77XX_WHITE);
@@ -454,6 +471,14 @@ void nextNewsPage()
   newsIndex        = (newsIndex + 1) % newsCount;
   scrollX          = SCREEN_W;
   drawNewsScreen();
+}
+
+// ================================================================
+// ニュース画面表示中の時刻更新（loop() から 1 秒ごとに呼ぶ）
+// ================================================================
+void updateNewsClock()
+{
+  drawNewsTitleBar();
 }
 
 // ================================================================

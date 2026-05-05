@@ -42,3 +42,6 @@ void updateNewsAutoPaging();
 
 /** 次の見出しへ手動で進める（NEXT 短押し） */
 void nextNewsPage();
+
+/** ニュース画面表示中の時刻表示を更新する（loop() から 1 秒ごとに呼ぶ） */
+void updateNewsClock();

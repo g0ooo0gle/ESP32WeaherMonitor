@@ -218,7 +218,6 @@ void loop()
   // ====================================================================
   if (currentScreen == Screen::WEATHER)
   {
-    // 1 秒ごとにチェックし、分が変化した場合のみ時計を再描画
     if (now - lastClockUpdate >= clockInterval) {
       drawClockCity();
       lastClockUpdate = now;
@@ -227,6 +226,10 @@ void loop()
   else  // Screen::NEWS
   {
     updateNewsAutoPaging();
+    if (now - lastClockUpdate >= clockInterval) {
+      updateNewsClock();
+      lastClockUpdate = now;
+    }
   }
 
   // ====================================================================
