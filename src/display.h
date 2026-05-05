@@ -34,6 +34,7 @@ extern unsigned long lastFetchAttempt;
 extern unsigned long lastWeeklyFetch;
 extern unsigned long lastHourlyFetch;
 extern unsigned long lastClockUpdate;
+extern unsigned long lastCitySwitch;
 
 // ------------------------------------------------------------------
 // エリア塗りつぶしヘルパー

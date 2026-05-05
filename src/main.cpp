@@ -161,6 +161,7 @@ void setup()
   lastWeeklyFetch  = tNow;
   lastHourlyFetch  = tNow;
   lastClockUpdate  = tNow;
+  lastCitySwitch   = tNow;
 
   Serial.println(F("[Setup] 完了。loop() に移行。"));
   Serial.printf("[Setup] 空きヒープ: %u bytes\n", ESP.getFreeHeap());
@@ -202,12 +203,7 @@ void loop()
 
   // ---- 天気データ更新完了 → 再描画 ----
   {
-    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-    portENTER_CRITICAL(&mux);
-    uint8_t ready     = weatherFetchReady;
-    weatherFetchReady = 0;
-    portEXIT_CRITICAL(&mux);
-
+    uint8_t ready = takeWeatherFetchReady();  // s_fetchMux で Core 0 と同期
     if (ready && currentScreen == Screen::WEATHER) {
       drawWeatherInfo();
     }
@@ -245,8 +241,8 @@ void loop()
       lastFetchAttempt = now;
     }
 
-    // 詳細データの定期更新
-    if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
+    // 詳細データの定期更新（currentSub に応じて選択）
+    if (currentSub == SubView::HOURLY) {
       if (now - lastHourlyFetch >= hourlyFetchInterval) {
         Serial.println(F("[Loop] 毎時天気 定期更新を予約"));
         requestWeatherFetch(FETCH_HOURLY);
@@ -257,6 +253,36 @@ void loop()
         Serial.println(F("[Loop] 週間天気 定期更新を予約"));
         requestWeatherFetch(FETCH_WEEKLY);
         lastWeeklyFetch = now;
+      }
+    }
+
+    // 自動切替: 1 分ごとに週間 ⇄ 毎時（地方巡回は毎時→週間で次の都市へ進む）
+    if (now - lastCitySwitch >= citySwitchInterval) {
+      lastCitySwitch = now;
+      if (currentSub == SubView::WEEKLY) {
+        currentSub = SubView::HOURLY;
+        Serial.printf("[Loop] 自動切替: 週間 → 毎時 (%s)\n", cities[cityIndex].name);
+        if (hourlyHours > 0) {
+          drawDetailArea();
+        } else {
+          showLoadingOverlay("毎時天気 取得中...");
+          if (!weatherFetchBusy) requestWeatherFetch(FETCH_HOURLY);
+        }
+      } else {
+        currentSub = SubView::WEEKLY;
+        if (currentMode == DisplayMode::ALL_CITIES) {
+          cityIndex = getNextCityInRegion(cityIndex);
+          Serial.printf("[Loop] 地方巡回: 次の都市 → %s\n", cities[cityIndex].name);
+          drawWeatherInfo();
+          showLoadingOverlay("天気 取得中...");
+          lastFetchAttempt = now;
+          lastWeeklyFetch  = now;
+          lastHourlyFetch  = now;
+          requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY | FETCH_HOURLY);
+        } else {
+          Serial.printf("[Loop] 自分の都市: 毎時 → 週間 (%s)\n", cities[cityIndex].name);
+          drawDetailArea();
+        }
       }
     }
   }

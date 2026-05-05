@@ -336,6 +336,15 @@ void requestWeatherFetch(uint8_t flags)
   portEXIT_CRITICAL(&s_fetchMux);
 }
 
+uint8_t takeWeatherFetchReady()
+{
+  portENTER_CRITICAL(&s_fetchMux);
+  uint8_t v     = weatherFetchReady;
+  weatherFetchReady = 0;
+  portEXIT_CRITICAL(&s_fetchMux);
+  return v;
+}
+
 static void weatherFetchTask(void*)
 {
   for (;;) {

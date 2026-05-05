@@ -36,6 +36,7 @@ unsigned long lastFetchAttempt = 0;
 unsigned long lastWeeklyFetch  = 0;
 unsigned long lastHourlyFetch  = 0;
 unsigned long lastClockUpdate  = 0;
+unsigned long lastCitySwitch   = 0;
 
 // ================================================================
 // 時計＋都市名エリア（差分検出付き）
@@ -113,7 +114,7 @@ void drawCurrentWeather()
 // ================================================================
 void drawDetailArea()
 {
-  if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
+  if (currentSub == SubView::HOURLY) {
     drawHourlyForecast(currentBgColor);
   } else {
     drawWeeklyForecast(currentBgColor);

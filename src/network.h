@@ -62,4 +62,10 @@ void startWeatherFetchTask();
 /** 取得を予約する（スレッドセーフ） */
 void requestWeatherFetch(uint8_t flags);
 
+/**
+ * weatherFetchReady をアトミックに読み取って 0 にクリアし返す。
+ * loop() での ready チェックに使う（s_fetchMux で Core 0 と同期）。
+ */
+uint8_t takeWeatherFetchReady();
+
 #endif // NETWORK_H

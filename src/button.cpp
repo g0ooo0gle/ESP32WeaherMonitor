@@ -72,15 +72,15 @@ static void modePress()
   if (currentScreen != Screen::WEATHER) return;
 
   if (currentMode == DisplayMode::ALL_CITIES) {
-    currentMode = DisplayMode::SINGLE;
-    cityIndex   = myCityIndex;
+    currentMode    = DisplayMode::SINGLE;
+    currentSub     = SubView::WEEKLY;
+    cityIndex      = myCityIndex;
+    lastCitySwitch = millis();
     Serial.printf("[Button] MODE: 地方巡回 → 自分の都市 (%s)\n",
                   cities[cityIndex].name);
     drawWeatherInfo();
     showLoadingOverlay("天気 取得中...");
-    uint8_t flags = FETCH_CURRENT |
-                    ((currentSub == SubView::HOURLY) ? FETCH_HOURLY : FETCH_WEEKLY);
-    requestWeatherFetch(flags);
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   } else {
     currentMode = DisplayMode::ALL_CITIES;
     cityIndex   = getFirstCityInRegion();
@@ -89,7 +89,8 @@ static void modePress()
                   cities[cityIndex].name);
     drawWeatherInfo();
     showLoadingOverlay("天気 取得中...");
-    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
+    lastCitySwitch = millis();
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY | FETCH_HOURLY);
   }
 }
 
@@ -108,21 +109,44 @@ static void nextPress()
   }
 
   if (currentMode == DisplayMode::ALL_CITIES) {
-    cityIndex = getNextCityInRegion(cityIndex);
-    Serial.printf("[Button] NEXT: 次の都市 → %s\n", cities[cityIndex].name);
-    drawWeatherInfo();
-    showLoadingOverlay("天気 取得中...");
     unsigned long now = millis();
-    lastFetchAttempt = now;
-    lastWeeklyFetch  = now;
-    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
+    if (currentSub == SubView::WEEKLY) {
+      // 週間 → 毎時（同じ都市）
+      currentSub     = SubView::HOURLY;
+      lastCitySwitch = now;
+      Serial.println(F("[Button] NEXT: 巡回 週間 → 毎時"));
+      if (hourlyHours > 0) {
+        drawDetailArea();
+      } else {
+        showLoadingOverlay("毎時天気 取得中...");
+        if (!weatherFetchBusy) requestWeatherFetch(FETCH_HOURLY);
+      }
+    } else {
+      // 毎時 → 次の都市（週間から）
+      currentSub       = SubView::WEEKLY;
+      cityIndex        = getNextCityInRegion(cityIndex);
+      lastFetchAttempt = now;
+      lastWeeklyFetch  = now;
+      lastHourlyFetch  = now;
+      lastCitySwitch   = now;
+      Serial.printf("[Button] NEXT: 巡回 次の都市 → %s\n", cities[cityIndex].name);
+      drawWeatherInfo();
+      showLoadingOverlay("天気 取得中...");
+      requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY | FETCH_HOURLY);
+    }
   } else {
+    // SINGLE モード: 週間 ⇄ 毎時 切替（手動操作でタイマーもリセット）
+    unsigned long now = millis();
+    lastCitySwitch = now;
     if (currentSub == SubView::WEEKLY) {
       currentSub = SubView::HOURLY;
       Serial.println(F("[Button] NEXT: 週間 → 毎時"));
-      drawWeatherInfo();
-      showLoadingOverlay("毎時天気 取得中...");
-      requestWeatherFetch(FETCH_HOURLY);
+      if (hourlyHours > 0) {
+        drawDetailArea();
+      } else {
+        showLoadingOverlay("毎時天気 取得中...");
+        requestWeatherFetch(FETCH_HOURLY);
+      }
     } else {
       currentSub = SubView::WEEKLY;
       Serial.println(F("[Button] NEXT: 毎時 → 週間"));

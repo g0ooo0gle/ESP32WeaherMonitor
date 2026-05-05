@@ -95,6 +95,7 @@ extern U8G2_FOR_ADAFRUIT_GFX u8g2;
 constexpr unsigned long fetchInterval       = 15UL * 60UL * 1000UL;  // 現在天気: 15 分
 constexpr unsigned long weeklyFetchInterval = 60UL * 60UL * 1000UL;  // 週間予報: 1 時間
 constexpr unsigned long hourlyFetchInterval = 30UL * 60UL * 1000UL;  // 毎時予報: 30 分
+constexpr unsigned long citySwitchInterval  =  1UL * 60UL * 1000UL;  // 地方巡回 1 画面: 1 分
 constexpr unsigned long clockInterval       = 1000UL;                // 時計チェック: 1 秒
 
 #endif // CONFIG_H
