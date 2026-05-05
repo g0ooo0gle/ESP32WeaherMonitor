@@ -108,6 +108,11 @@ static void nextPress()
     Serial.printf("[Button] NEXT: 次の都市 → %s\n", cities[cityIndex].name);
     drawWeatherInfo();
     showLoadingOverlay("天気 取得中...");
+    // タイマーをリセットして直後の二重フェッチを防ぐ
+    unsigned long now2 = millis();
+    lastFetchAttempt = now2;
+    lastWeeklyFetch  = now2;
+    lastCitySwitch   = now2;
     requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
   } else {
     if (currentSub == SubView::WEEKLY) {
