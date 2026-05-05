@@ -53,6 +53,10 @@ static void screenPress()
     currentScreen = Screen::WEATHER;
     Serial.println(F("[Button] SCREEN: ニュース → 天気"));
     drawWeatherInfo();
+    // NEWS 中は天気取得を止めていたので復帰時に最新データを取得
+    requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
+    lastFetchAttempt = millis();
+    lastWeeklyFetch  = millis();
   }
 }
 

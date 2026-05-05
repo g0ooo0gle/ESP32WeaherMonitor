@@ -210,45 +210,48 @@ void loop()
 
   // ====================================================================
   // データ更新スケジュール（Core 0 へ非同期委譲）
-  // HTTP 取得は Core 0 が担うため、loop() (Core 1) はブロックしない。
+  //
+  // [重要] NEWS 画面表示中は天気の定期取得を一切行わない。
+  //   - Core 0 の HTTP 処理を RSS 取得専用にすることで渋滞を解消
+  //   - WEATHER 画面復帰時に requestWeatherFetch() が呼ばれるため鮮度は保たれる
+  //   - タイマー変数はここでは更新しないため、復帰後に時間が来れば自動取得される
   // ====================================================================
+  if (currentScreen == Screen::WEATHER)
+  {
+    // 全国モード: 20秒ごとに次の都市へ切替し、取得を予約
+    if (currentMode == DisplayMode::ALL_CITIES) {
+      if (now - lastCitySwitch >= citySwitchInterval) {
+        cityIndex = getNextCityInRegion(cityIndex);
+        Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
+        drawClockCity();
+        prevCityIndex    = cityIndex;
+        lastCitySwitch   = now;
+        lastFetchAttempt = now;
+        lastWeeklyFetch  = now;
+        requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
+      }
+    }
 
-  // 全国モード: 20秒ごとに次の都市へ切替し、取得を予約
-  if (currentMode == DisplayMode::ALL_CITIES) {
-    if (now - lastCitySwitch >= citySwitchInterval) {
-      cityIndex = getNextCityInRegion(cityIndex);
-      Serial.printf("[Loop] 都市切替 → %s\n", cities[cityIndex].name);
-
-      // 都市名を即時反映（天気データは取得後に更新）
-      if (currentScreen == Screen::WEATHER) drawClockCity();
-
-      prevCityIndex    = cityIndex;
-      lastCitySwitch   = now;
+    // 現在天気の定期更新 (15分)
+    if (now - lastFetchAttempt >= fetchInterval) {
+      Serial.println(F("[Loop] 現在天気定期更新を予約..."));
+      requestWeatherFetch(FETCH_CURRENT);
       lastFetchAttempt = now;
-      lastWeeklyFetch  = now;
-      requestWeatherFetch(FETCH_CURRENT | FETCH_WEEKLY);
     }
-  }
 
-  // 現在天気の定期更新 (15分)
-  if (now - lastFetchAttempt >= fetchInterval) {
-    Serial.println(F("[Loop] 現在天気定期更新を予約..."));
-    requestWeatherFetch(FETCH_CURRENT);
-    lastFetchAttempt = now;
-  }
-
-  // 詳細データの定期更新
-  if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
-    if (now - lastHourlyFetch >= hourlyFetchInterval) {
-      Serial.println(F("[Loop] 毎時天気定期更新を予約..."));
-      requestWeatherFetch(FETCH_HOURLY);
-      lastHourlyFetch = now;
-    }
-  } else {
-    if (now - lastWeeklyFetch >= weeklyFetchInterval) {
-      Serial.println(F("[Loop] 週間天気定期更新を予約..."));
-      requestWeatherFetch(FETCH_WEEKLY);
-      lastWeeklyFetch = now;
+    // 詳細データの定期更新
+    if (currentMode == DisplayMode::SINGLE && currentSub == SubView::HOURLY) {
+      if (now - lastHourlyFetch >= hourlyFetchInterval) {
+        Serial.println(F("[Loop] 毎時天気定期更新を予約..."));
+        requestWeatherFetch(FETCH_HOURLY);
+        lastHourlyFetch = now;
+      }
+    } else {
+      if (now - lastWeeklyFetch >= weeklyFetchInterval) {
+        Serial.println(F("[Loop] 週間天気定期更新を予約..."));
+        requestWeatherFetch(FETCH_WEEKLY);
+        lastWeeklyFetch = now;
+      }
     }
   }
 }
