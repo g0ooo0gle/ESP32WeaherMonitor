@@ -14,15 +14,10 @@
  *   │ ▶ テキストが右→左へ流れる   │  電光掲示板エリア (46px)
  *   └──────────────────────────────┘  Y=160
  *
- * [動作フロー]
- *   1. 見出しを静止エリアに折り返し表示 (常時)
- *   2. 同じ見出しを電光掲示板エリアで横スクロール
- *   3. スクロールが末尾を抜けたら次の見出しへ (スクロールが切替タイミングを決定)
- *
- * [タスク間データ共有]
- *   newsItems[]  : 取得済みの見出し配列 (共有)
- *   newsCount    : 取得済み件数 (共有)
- *   newsMutex    : 上記の保護
+ * [自動遷移のバグ対策]
+ *   scrollX のリセットは drawNewsScreen/redrawNewsContent を呼ぶ前に行う。
+ *   これにより、内部の Mutex 取得が遅延しても二重トリガーが起きない。
+ *   自動遷移には軽量な redrawNewsContent() を使い fillScreen を省く。
  */
 
 #include "ticker.h"
@@ -32,7 +27,7 @@
 #include <HTTPClient.h>
 
 // ================================================================
-// 共有データ (タスクとメインの両方からアクセス)
+// 共有データ (Core 0 タスクとメイン Core 1 の両方からアクセス)
 // ================================================================
 static char newsItems[NEWS_MAX_ITEMS][NEWS_TITLE_MAX];
 static int  newsCount = 0;
@@ -44,20 +39,30 @@ static int newsIndex = 0;
 // ================================================================
 // 電光掲示板スクロール状態
 // ================================================================
-static int           scrollX      = 0;   // 現在のスクロール X 座標 (px)
-static int           scrollTextW  = 0;   // 見出し全幅 (16px フォントで計測)
-static unsigned long lastScrollMs = 0;   // 前回スクロール更新時刻
+static int           scrollX      = SCREEN_W; // 現在のスクロール X 座標
+static int           scrollTextW  = 0;         // 見出し全幅 (16px フォントで計測)
+static unsigned long lastScrollMs = 0;
 
-static bool waitingForNews = false;      // ニュース取得待ちフラグ
+static bool waitingForNews = false;
 
-static const int SCROLL_SPEED_PX = 2;   // 1 ティックあたりの移動量 (px)
-static const int SCROLL_TICK_MS  = 30;  // スクロール更新間隔 (ms) ≒ 33fps
+static const int SCROLL_SPEED_PX = 2;   // px / ティック
+static const int SCROLL_TICK_MS  = 30;  // ms / ティック ≒ 33fps
 
-// 電光掲示板エリアのレイアウト (16px フォント、NEWS_TICKER_Y=114, NEWS_TICKER_H=46)
-//   ベースライン = 上端 + 高さ/2 + 8 (16px フォントの光学的中心補正)
+// 電光掲示板エリアのレイアウト (16px フォント, NEWS_TICKER_Y=114, NEWS_TICKER_H=46)
 static const int TICKER_BASELINE = NEWS_TICKER_Y + NEWS_TICKER_H / 2 + 8;  // = 145
 static const int TICKER_CLEAR_Y  = TICKER_BASELINE - 16;                    // = 129
-static const int TICKER_CLEAR_H  = 24;                                      // px (描画クリア幅)
+static const int TICKER_CLEAR_H  = 24;
+
+// ================================================================
+// [内部] UTF-8 文字のバイト数を返す (1〜4)
+// ================================================================
+static inline int utf8SeqLen(unsigned char c)
+{
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1;
+}
 
 // ================================================================
 // [内部] UTF-8 として不正なバイト列を '?' に置換
@@ -85,7 +90,7 @@ static void sanitizeUtf8(char *buf)
 }
 
 // ================================================================
-// [内部] XML から <title> タグを順番に抽出して newsItems[] に格納
+// [内部] XML から <title> タグを抽出して newsItems[] に格納
 // ================================================================
 static void extractTitlesFromRss(const String &xml)
 {
@@ -102,7 +107,7 @@ static void extractTitlesFromRss(const String &xml)
     int end = xml.indexOf("</title>", start);
     if (end == -1) break;
 
-    if (titleCount > 0)   // 0 件目はチャンネル名なのでスキップ
+    if (titleCount > 0)  // 0 件目はチャンネル名
     {
       String title = xml.substring(start, end);
       title.replace("&amp;",  "&");
@@ -128,7 +133,7 @@ static void extractTitlesFromRss(const String &xml)
 }
 
 // ================================================================
-// [内部・タスクから呼ぶ] NHK RSS を取得
+// [内部] NHK RSS を取得 (Core 0 タスクから呼ぶ)
 // ================================================================
 static void fetchNewsImpl()
 {
@@ -146,8 +151,7 @@ static void fetchNewsImpl()
   Serial.println(F("[News] NHK RSS取得中..."));
   int httpCode = http.GET();
 
-  if (httpCode == HTTP_CODE_OK)
-  {
+  if (httpCode == HTTP_CODE_OK) {
     String xml = http.getString();
     Serial.printf("[News] RSS取得完了 (%d bytes)\n", xml.length());
 
@@ -158,8 +162,7 @@ static void fetchNewsImpl()
     } else {
       Serial.println(F("[News] Mutex取得失敗、今回はスキップ"));
     }
-  }
-  else {
+  } else {
     Serial.printf("[News] HTTP失敗 code=%d\n", httpCode);
   }
 
@@ -167,12 +170,11 @@ static void fetchNewsImpl()
 }
 
 // ================================================================
-// FreeRTOS タスク: Core 0 で動作する RSS 取得ループ (5分ごと)
+// FreeRTOS タスク: Core 0 で RSS を 5 分ごとに取得
 // ================================================================
 static void newsFetchTask(void * /*param*/)
 {
   fetchNewsImpl();
-
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5UL * 60UL * 1000UL));
     fetchNewsImpl();
@@ -180,11 +182,7 @@ static void newsFetchTask(void * /*param*/)
 }
 
 // ================================================================
-// [内部] 静止エリア: 12px フォントで折り返し多行描画
-//
-// 1文字ずつ行バッファに追加し、幅が bodyW を超えたら改行。
-// 最大 NEWS_STATIC_H / lineH = 5 行まで描画する。
-// 溢れた部分は下の電光掲示板エリアのスクロールで補完。
+// [内部] 静止エリア: 12px フォントで折り返し多行描画 (最大 5 行)
 // ================================================================
 static void drawNewsBody(const char *text)
 {
@@ -195,29 +193,22 @@ static void drawNewsBody(const char *text)
   u8g2.setForegroundColor(ST77XX_WHITE);
   u8g2.setBackgroundColor(COL_BG_NEWS);
 
-  const int lineH    = 16;                    // フォント 12px + 行間 4px
-  const int maxLines = NEWS_STATIC_H / lineH; // 90/16 = 5 行
+  const int lineH    = 16;
+  const int maxLines = NEWS_STATIC_H / lineH;  // 90/16 = 5
   const int leftPad  = 4;
   const int bodyW    = SCREEN_W - leftPad * 2;
 
   char lineBuf[NEWS_TITLE_MAX];
-  int  lineLen   = 0;
-  int  lineCount = 0;
-  int  i = 0;
+  int  lineLen = 0, lineCount = 0, i = 0;
 
   while (text[i] != '\0' && lineCount < maxLines) {
-    unsigned char c = (unsigned char)text[i];
-    int seqLen = 1;
-    if      ((c & 0xE0) == 0xC0) seqLen = 2;
-    else if ((c & 0xF0) == 0xE0) seqLen = 3;
-    else if ((c & 0xF8) == 0xF0) seqLen = 4;
+    int seqLen = utf8SeqLen((unsigned char)text[i]);
 
     if (lineLen + seqLen >= (int)sizeof(lineBuf) - 1) break;
     for (int k = 0; k < seqLen; k++) lineBuf[lineLen + k] = text[i + k];
     lineBuf[lineLen + seqLen] = '\0';
 
-    int w = u8g2.getUTF8Width(lineBuf);
-    if (w > bodyW) {
+    if (u8g2.getUTF8Width(lineBuf) > bodyW) {
       lineBuf[lineLen] = '\0';
       u8g2.setCursor(leftPad, NEWS_STATIC_Y + lineH * (lineCount + 1) - 2);
       u8g2.print(lineBuf);
@@ -245,8 +236,8 @@ static void drawNewsBody(const char *text)
 // ================================================================
 // [内部] 電光掲示板エリア: 16px フォントで横スクロール描画
 //
-// TICKER_CLEAR_H px 分だけクリアして再描画 (エリア全体より高速)。
-// 可視範囲外の文字は幅計算のみ行いレンダリングをスキップ。
+// テキスト行 1 行分だけクリアして再描画 (エリア全体より高速)。
+// 可視範囲外の文字は幅計算のみでレンダリングをスキップ。
 // ================================================================
 static void drawScrollBody(const char *text)
 {
@@ -261,11 +252,7 @@ static void drawScrollBody(const char *text)
   int i = 0;
 
   while (text[i] != '\0') {
-    unsigned char c = (unsigned char)text[i];
-    int seqLen = 1;
-    if      ((c & 0xE0) == 0xC0) seqLen = 2;
-    else if ((c & 0xF0) == 0xE0) seqLen = 3;
-    else if ((c & 0xF8) == 0xF0) seqLen = 4;
+    int seqLen = utf8SeqLen((unsigned char)text[i]);
 
     char tmp[8] = {};
     for (int k = 0; k < seqLen; k++) tmp[k] = text[i + k];
@@ -310,27 +297,47 @@ static void drawNewsTitleBar()
 
 // ================================================================
 // [内部] スクロール状態を初期化 (Mutex 保持状態で呼ぶこと)
-// 16px フォントで全幅を計測し、画面右端から開始
 // ================================================================
 static void initScroll()
 {
   u8g2.setFont(u8g2_font_b16_t_japanese3);
   scrollTextW  = u8g2.getUTF8Width(newsItems[newsIndex]);
-  scrollX      = SCREEN_W;
+  // scrollX は呼び出し前に SCREEN_W にリセット済みであること
   lastScrollMs = millis();
 }
 
 // ================================================================
-// ニュース画面を描画する (公開API)
+// [内部] コンテンツエリアのみ再描画 (自動ページ遷移用・高速版)
 //
-// 上部静止エリアと下部電光掲示板を両方描画し、スクロールを初期化。
+// drawNewsScreen() と異なり tft.fillScreen() を行わないため約 20ms。
+// タイトルバー背景は既存のまま再描画するので視覚的な差異なし。
+// ================================================================
+static void redrawNewsContent()
+{
+  // コンテンツ 2 エリアをクリア
+  tft.fillRect(0, NEWS_STATIC_Y, SCREEN_W, NEWS_STATIC_H, COL_BG_NEWS);
+  tft.fillRect(0, NEWS_TICKER_Y, SCREEN_W, NEWS_TICKER_H, COL_BG_NEWS);
+  tft.drawFastHLine(0, NEWS_DIVIDER_Y, SCREEN_W, ST77XX_WHITE);
+  drawNewsTitleBar();
+
+  if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    if (newsCount > 0) {
+      drawNewsBody(newsItems[newsIndex]);
+      initScroll();
+      drawScrollBody(newsItems[newsIndex]);
+    }
+    xSemaphoreGive(newsMutex);
+  }
+}
+
+// ================================================================
+// ニュース画面を描画する (公開API)
+// 画面切替・ボタン操作時に呼ぶ。fillScreen で完全リセット。
 // ================================================================
 void drawNewsScreen()
 {
   tft.fillScreen(COL_BG_NEWS);
   drawNewsTitleBar();
-
-  // 静止エリアと電光掲示板エリアの仕切り線
   tft.drawFastHLine(0, NEWS_DIVIDER_Y, SCREEN_W, ST77XX_WHITE);
 
   if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -347,9 +354,9 @@ void drawNewsScreen()
       if (newsIndex < 0)          newsIndex = newsCount - 1;
       if (newsIndex >= newsCount) newsIndex = 0;
 
-      drawNewsBody(newsItems[newsIndex]);   // 上部: 静止表示
+      drawNewsBody(newsItems[newsIndex]);
       initScroll();
-      drawScrollBody(newsItems[newsIndex]); // 下部: スクロール初期フレーム
+      drawScrollBody(newsItems[newsIndex]);
     }
     xSemaphoreGive(newsMutex);
   }
@@ -358,8 +365,11 @@ void drawNewsScreen()
 // ================================================================
 // スクロール更新 (loop() からニュース画面表示中のみ毎回呼ぶ)
 //
-// 電光掲示板エリアだけを毎フレーム更新する (静止エリアは触らない)。
-// テキストが左端を抜けたら drawNewsScreen() で次の見出しへ切替。
+// [バグ対策]
+//   遷移条件が成立したら scrollX を SCREEN_W にリセットしてから
+//   redrawNewsContent() を呼ぶ。これにより内部の Mutex 取得に
+//   時間がかかっても次の呼び出しで二重遷移が起きない。
+//   自動遷移は fillScreen なしの redrawNewsContent() で高速化。
 // ================================================================
 void updateNewsAutoPaging()
 {
@@ -369,7 +379,8 @@ void updateNewsAutoPaging()
   if (waitingForNews && newsCount > 0) {
     waitingForNews = false;
     newsIndex = 0;
-    drawNewsScreen();
+    scrollX   = SCREEN_W;  // 先にリセット
+    redrawNewsContent();
     return;
   }
 
@@ -380,14 +391,16 @@ void updateNewsAutoPaging()
 
   scrollX -= SCROLL_SPEED_PX;
 
-  // テキストが完全に左端を抜けたら次の見出しへ
+  // スクロール完了 → 次の見出しへ
   if (scrollX < -scrollTextW) {
+    scrollX = SCREEN_W;                             // ← 先にリセット (二重遷移防止)
     newsIndex = (newsIndex + 1) % newsCount;
-    drawNewsScreen();
+    redrawNewsContent();                            // fillScreen なしで高速遷移
     return;
+    // lastScrollMs は redrawNewsContent → initScroll() 内で更新される
   }
 
-  // 電光掲示板エリアのみ再描画 (静止エリアはそのまま)
+  // 通常フレーム: 電光掲示板エリアのみ再描画 (静止エリアはそのまま)
   if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
     drawScrollBody(newsItems[newsIndex]);
     xSemaphoreGive(newsMutex);
@@ -401,6 +414,7 @@ void nextNewsPage()
 {
   if (newsCount == 0) return;
   newsIndex = (newsIndex + 1) % newsCount;
+  scrollX   = SCREEN_W;
   drawNewsScreen();
 }
 
@@ -411,6 +425,7 @@ void prevNewsPage()
 {
   if (newsCount == 0) return;
   newsIndex = (newsIndex - 1 + newsCount) % newsCount;
+  scrollX   = SCREEN_W;
   drawNewsScreen();
 }
 
@@ -426,9 +441,10 @@ void setupNews()
   }
 
   newsCount      = 0;
-  scrollX        = 0;
+  scrollX        = SCREEN_W;
   scrollTextW    = 0;
   waitingForNews = false;
+  lastScrollMs   = 0;
 
   for (int i = 0; i < NEWS_MAX_ITEMS; i++) {
     newsItems[i][0] = '\0';
