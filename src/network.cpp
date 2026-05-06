@@ -28,9 +28,111 @@
 // ================================================================
 // WiFiManager による自動接続
 // ================================================================
+
+// AP モード時（WiFi 未設定）に設定方法を表示する
+static void drawWiFiAPScreen()
+{
+  tft.fillScreen(ST77XX_BLACK);
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_YELLOW);
+  int tw = u8g2.getUTF8Width("WiFi 設定が必要");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 20);
+  u8g2.print("WiFi 設定が必要");
+
+  tft.drawFastHLine(0, 25, SCREEN_W, ST77XX_YELLOW);
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  tw = u8g2.getUTF8Width("スマホで接続:");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 48);
+  u8g2.print("スマホで接続:");
+
+  // AP SSID
+  u8g2.setFont(u8g2_font_helvB08_tf);
+  u8g2.setForegroundColor(ST77XX_CYAN);
+  tw = u8g2.getUTF8Width("ESP32_Weather");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 68);
+  u8g2.print("ESP32_Weather");
+  tw = u8g2.getUTF8Width("_Config");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 80);
+  u8g2.print("_Config");
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  tw = u8g2.getUTF8Width("ブラウザで開く:");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 103);
+  u8g2.print("ブラウザで開く:");
+
+  // 設定 URL
+  u8g2.setFont(u8g2_font_helvB12_tf);
+  u8g2.setForegroundColor(ST77XX_GREEN);
+  tw = u8g2.getUTF8Width("192.168.4.1");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 125);
+  u8g2.print("192.168.4.1");
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(0x8410);  // gray
+  tw = u8g2.getUTF8Width("接続待機中...");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 150);
+  u8g2.print("接続待機中...");
+}
+
+// 接続成功時に SSID と IP アドレスを表示する（約 2 秒）
+static void drawWiFiSuccessScreen()
+{
+  tft.fillScreen(ST77XX_BLACK);
+
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_GREEN);
+  int tw = u8g2.getUTF8Width("WiFi 接続完了");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 22);
+  u8g2.print("WiFi 接続完了");
+
+  tft.drawFastHLine(0, 27, SCREEN_W, ST77XX_GREEN);
+
+  // SSID
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  tw = u8g2.getUTF8Width("SSID:");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 52);
+  u8g2.print("SSID:");
+
+  String ssid = WiFi.SSID();
+  if (ssid.length() > 15) ssid = ssid.substring(0, 14) + "~";
+  u8g2.setFont(u8g2_font_helvB10_tf);
+  u8g2.setForegroundColor(ST77XX_CYAN);
+  tw = u8g2.getUTF8Width(ssid.c_str());
+  u8g2.setCursor((SCREEN_W - tw) / 2, 70);
+  u8g2.print(ssid.c_str());
+
+  // IP アドレス
+  u8g2.setFont(u8g2_font_b12_t_japanese3);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  tw = u8g2.getUTF8Width("IPアドレス:");
+  u8g2.setCursor((SCREEN_W - tw) / 2, 100);
+  u8g2.print("IPアドレス:");
+
+  String ip = WiFi.localIP().toString();
+  u8g2.setFont(u8g2_font_helvB12_tf);
+  u8g2.setForegroundColor(ST77XX_GREEN);
+  tw = u8g2.getUTF8Width(ip.c_str());
+  u8g2.setCursor((SCREEN_W - tw) / 2, 122);
+  u8g2.print(ip.c_str());
+
+  delay(2000);
+}
+
 bool setupWiFi()
 {
   WiFiManager wm;
+
+  wm.setAPCallback([](WiFiManager*) {
+    Serial.println(F("[Network] AP モード開始: ESP32_Weather_Config / 192.168.4.1"));
+    drawWiFiAPScreen();
+  });
 
   if (!wm.autoConnect("ESP32_Weather_Config"))
   {
@@ -39,8 +141,9 @@ bool setupWiFi()
     return false;
   }
 
-  Serial.print(F("[Network] WiFi 接続完了 IP:"));
-  Serial.println(WiFi.localIP());
+  Serial.printf("[Network] WiFi 接続完了 SSID:%s IP:%s\n",
+                WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  drawWiFiSuccessScreen();
   return true;
 }
 
