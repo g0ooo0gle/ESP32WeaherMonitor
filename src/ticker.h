@@ -45,3 +45,13 @@ void nextNewsPage();
 
 /** ニュース画面表示中の時刻表示を更新する（loop() から 1 秒ごとに呼ぶ） */
 void updateNewsClock();
+
+/** 現在の取得済みニュース件数を返す */
+int getNewsCount();
+
+/**
+ * インデックス i のニュースを titleBuf / descBuf にコピーして返す。
+ * Mutex を取得して安全にコピーする。
+ * 戻り値: コピー成功 true / 範囲外または Mutex 失敗 false
+ */
+bool getNewsItem(int i, char* titleBuf, int titleLen, char* descBuf, int descLen);

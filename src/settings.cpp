@@ -25,6 +25,8 @@
 #include "settings.h"
 #include "display.h"
 #include "button.h"
+#include "weather.h"
+#include "ticker.h"
 
 #include <Preferences.h>
 #include <WebServer.h>
@@ -144,6 +146,18 @@ static String buildPageHeader(const char* title, const char* activePage)
          ".kv .v{color:#eee;font-weight:bold;word-break:break-all;text-align:right;max-width:60%}"
          ".sig-good{color:#66bb6a}.sig-fair{color:#ffa726}.sig-poor{color:#ef5350}"
          "hr{border:none;border-top:1px solid #263354;margin:24px 0}"
+         "table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}"
+         "th{background:#0d2137;color:#90caf9;padding:6px 4px;text-align:center}"
+         "td{padding:5px 4px;text-align:center;border-bottom:1px solid #1e2d40;color:#eee}"
+         "tr:last-child td{border-bottom:none}"
+         ".tdl{text-align:left}"
+         ".wx{color:#ffd54f;font-size:12px}"
+         ".tmp{color:#ef9a9a}"
+         ".tmpl{color:#90caf9}"
+         ".newsitem{padding:10px 0;border-bottom:1px solid #263354}"
+         ".newsitem:last-child{border-bottom:none}"
+         ".newstitle{color:#fff;font-size:14px;font-weight:bold;margin-bottom:4px}"
+         ".newsdesc{color:#90a4ae;font-size:12px;line-height:1.5}"
          "</style></head><body>"
          "<h1>&#x1F4E1; ESP32 Weather</h1>"
          "<p class='sub'>Weather Monitor Web Console</p>"
@@ -441,17 +455,112 @@ static void handleSave()
 }
 
 // ================================================================
-// Web サーバー: GET /dashboard — 接続情報ダッシュボード
+// Web サーバー: GET /dashboard — 接続情報＋現在表示データ
 // ================================================================
 static void handleDashboard()
 {
   String html = buildPageHeader("情報 - ESP32 Weather", "dashboard");
-  html.reserve(html.length() + 2400);
+  html.reserve(html.length() + 6000);
 
-  // 自動更新（10秒）
   html += F("<meta http-equiv='refresh' content='10'>");
 
-  // ---- WiFi 情報 ----
+  // ================================================================
+  // 現在天気
+  // ================================================================
+  {
+    String wxJp = getWeatherJp(currentWeatherCode);
+    char tmpBuf[16];
+    dtostrf(currentTemp, 4, 1, tmpBuf);
+
+    html += F("<div class='card'><h3>&#x26C5; 現在の天気</h3>");
+    html += F("<div class='kv'><span class='k'>都市</span><span class='v'>");
+    html += htmlEscape(getActiveName());
+    html += F("</span></div>");
+    html += F("<div class='kv'><span class='k'>気温</span>"
+              "<span class='v' style='color:#ef9a9a;font-size:18px'>");
+    html += tmpBuf;
+    html += F(" &#8451;</span></div>");
+    html += F("<div class='kv'><span class='k'>天気</span><span class='v'>");
+    html += htmlEscape(wxJp.c_str());
+    html += F("</span></div>");
+    html += F("</div>");
+  }
+
+  // ================================================================
+  // 週間予報
+  // ================================================================
+  if (weeklyDays > 0) {
+    html += F("<div class='card'><h3>&#x1F4C5; 週間予報</h3>"
+              "<table><tr><th>日</th><th>天気</th>"
+              "<th class='tmp'>最高</th><th class='tmpl'>最低</th></tr>");
+    for (int i = 0; i < weeklyDays; i++) {
+      const DailyForecast& d = weeklyForecast[i];
+      String wxJp = getWeatherJp(d.weatherCode);
+      char hi[10], lo[10];
+      dtostrf(d.tempMax, 4, 1, hi);
+      dtostrf(d.tempMin, 4, 1, lo);
+      html += F("<tr><td class='tdl'>");
+      html += htmlEscape(d.label);
+      html += F("</td><td class='wx'>");
+      html += htmlEscape(wxJp.c_str());
+      html += F("</td><td class='tmp'>");
+      html += hi;
+      html += F("</td><td class='tmpl'>");
+      html += lo;
+      html += F("</td></tr>");
+    }
+    html += F("</table></div>");
+  }
+
+  // ================================================================
+  // 毎時予報
+  // ================================================================
+  if (hourlyHours > 0) {
+    html += F("<div class='card'><h3>&#x1F552; 毎時予報</h3>"
+              "<table><tr><th>時刻</th><th>天気</th><th class='tmp'>気温</th></tr>");
+    for (int i = 0; i < hourlyHours; i++) {
+      const HourlyForecast& h = hourlyForecast[i];
+      String wxJp = getWeatherJp(h.weatherCode);
+      char tmp[10];
+      dtostrf(h.temp, 4, 1, tmp);
+      html += F("<tr><td class='tdl'>");
+      html += htmlEscape(h.label);
+      html += F("</td><td class='wx'>");
+      html += htmlEscape(wxJp.c_str());
+      html += F("</td><td class='tmp'>");
+      html += tmp;
+      html += F(" &#8451;</td></tr>");
+    }
+    html += F("</table></div>");
+  }
+
+  // ================================================================
+  // ニュース一覧
+  // ================================================================
+  {
+    int cnt = getNewsCount();
+    html += F("<div class='card'><h3>&#x1F4F0; ニュース</h3>");
+    if (cnt == 0) {
+      html += F("<p style='color:#607d8b;font-size:13px'>取得中...</p>");
+    } else {
+      char titleBuf[NEWS_TITLE_MAX];
+      char descBuf[NEWS_DESC_MAX];
+      for (int i = 0; i < cnt; i++) {
+        if (!getNewsItem(i, titleBuf, NEWS_TITLE_MAX, descBuf, NEWS_DESC_MAX)) continue;
+        html += F("<div class='newsitem'>"
+                  "<div class='newstitle'>");
+        html += htmlEscape(titleBuf);
+        html += F("</div><div class='newsdesc'>");
+        html += htmlEscape(descBuf);
+        html += F("</div></div>");
+      }
+    }
+    html += F("</div>");
+  }
+
+  // ================================================================
+  // WiFi 情報
+  // ================================================================
   html += F("<div class='card'><h3>&#x1F4F6; WiFi 接続</h3>");
 
   String ssid = WiFi.SSID();
@@ -470,8 +579,7 @@ static void handleDashboard()
   int rssi = WiFi.RSSI();
   const char* sigClass = rssi >= -60 ? "sig-good" : (rssi >= -75 ? "sig-fair" : "sig-poor");
   const char* sigLabel = rssi >= -60 ? "良好" : (rssi >= -75 ? "普通" : "弱い");
-  html += F("<div class='kv'><span class='k'>電波強度 (RSSI)</span>"
-            "<span class='v ");
+  html += F("<div class='kv'><span class='k'>電波強度 (RSSI)</span><span class='v ");
   html += sigClass;
   html += F("'>");
   html += rssi;
@@ -485,16 +593,18 @@ static void handleDashboard()
 
   html += F("</div>");
 
-  // ---- システム情報 ----
+  // ================================================================
+  // システム情報
+  // ================================================================
   html += F("<div class='card'><h3>&#x1F4BB; システム</h3>");
 
   unsigned long upSec = millis() / 1000;
-  unsigned long d = upSec / 86400;
-  unsigned long h = (upSec % 86400) / 3600;
-  unsigned long m = (upSec % 3600) / 60;
-  unsigned long s = upSec % 60;
+  unsigned long ud = upSec / 86400;
+  unsigned long uh = (upSec % 86400) / 3600;
+  unsigned long um = (upSec % 3600) / 60;
+  unsigned long us = upSec % 60;
   char uptimeBuf[32];
-  snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu", d, h, m, s);
+  snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu", ud, uh, um, us);
   html += F("<div class='kv'><span class='k'>稼働時間</span><span class='v'>");
   html += uptimeBuf;
   html += F("</span></div>");
@@ -511,7 +621,6 @@ static void handleDashboard()
   html += ESP.getCpuFreqMHz();
   html += F(" MHz</span></div>");
 
-  // 現在時刻
   struct tm ti;
   if (getLocalTime(&ti, 0)) {
     char timeBuf[32];
@@ -520,42 +629,6 @@ static void handleDashboard()
     html += timeBuf;
     html += F("</span></div>");
   }
-
-  html += F("</div>");
-
-  // ---- 現在の設定 ----
-  html += F("<div class='card'><h3>&#x2699; 現在の設定</h3>");
-
-  html += F("<div class='kv'><span class='k'>表示モード</span><span class='v'>");
-  html += (currentMode == DisplayMode::SINGLE) ? F("自分の都市") : F("地方巡回");
-  html += F("</span></div>");
-
-  html += F("<div class='kv'><span class='k'>現在の都市</span><span class='v'>");
-  html += htmlEscape(getActiveName());
-  html += F("</span></div>");
-
-  if (!useCustomCity) {
-    html += F("<div class='kv'><span class='k'>登録都市</span><span class='v'>");
-    html += htmlEscape(cities[myCityIndex].name);
-    html += F("</span></div>");
-  } else {
-    char latLon[48];
-    snprintf(latLon, sizeof(latLon), "%.4f, %.4f", customCityLat, customCityLon);
-    html += F("<div class='kv'><span class='k'>カスタム都市</span><span class='v'>");
-    html += htmlEscape(customCityName);
-    html += F("</span></div>");
-    html += F("<div class='kv'><span class='k'>緯度・経度</span><span class='v'>");
-    html += latLon;
-    html += F("</span></div>");
-  }
-
-  html += F("<div class='kv'><span class='k'>巡回地方</span><span class='v'>");
-  html += (regionFilter == FILTER_ALL) ? "全国" : REGION_LABELS[regionFilter];
-  html += F("</span></div>");
-
-  html += F("<div class='kv'><span class='k'>RSS フィード</span><span class='v'>");
-  html += htmlEscape(rssUrl);
-  html += F("</span></div>");
 
   html += F("</div>");
 

@@ -482,6 +482,26 @@ void updateNewsClock()
 }
 
 // ================================================================
+// Web コンソール向けアクセサ
+// ================================================================
+int getNewsCount()
+{
+  return (int)newsCount;
+}
+
+bool getNewsItem(int i, char* titleBuf, int titleLen, char* descBuf, int descLen)
+{
+  if (i < 0 || i >= (int)newsCount) return false;
+  if (xSemaphoreTake(newsMutex, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+  strncpy(titleBuf, newsItems[i],        titleLen - 1);
+  titleBuf[titleLen - 1] = '\0';
+  strncpy(descBuf,  newsDescriptions[i], descLen  - 1);
+  descBuf[descLen  - 1] = '\0';
+  xSemaphoreGive(newsMutex);
+  return true;
+}
+
+// ================================================================
 // ニュース機能の初期化（setup() で 1 回）
 // ================================================================
 void setupNews()
