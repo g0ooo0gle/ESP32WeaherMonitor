@@ -18,6 +18,7 @@
 #include "ticker.h"
 #include "display.h"
 #include "button.h"
+#include "settings.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 
@@ -176,13 +177,12 @@ static void fetchNewsImpl()
     return;
   }
 
-  const char *rssUrl = "https://www3.nhk.or.jp/rss/news/cat0.xml";
   HTTPClient http;
   http.setTimeout(8000);
   http.begin(rssUrl);
   http.addHeader("Accept-Charset", "utf-8");
 
-  Serial.println(F("[News] NHK RSS 取得中..."));
+  Serial.printf("[News] RSS 取得中: %s\n", rssUrl);
   int httpCode = http.GET();
 
   if (httpCode == HTTP_CODE_OK) {

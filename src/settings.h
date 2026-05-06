@@ -8,9 +8,12 @@
  *   myCityIndex  : 自分の都市 (0 〜 cityCount-1)
  *   regionFilter : 巡回する地方 (FILTER_xxx 定数)
  *   useCustomCity / customCityName / customCityLat / customCityLon
+ *   rssUrl       : ニュースRSSフィードURL
  *
  * [Web 設定ページ]
- *   http://<ESP32 の IP>/ でアクセス
+ *   http://<ESP32 の IP>/            → 設定フォーム
+ *   http://<ESP32 の IP>/dashboard   → 接続情報ダッシュボード
+ *   http://<ESP32 の IP>/system      → 再起動・WiFiリセット
  */
 
 #pragma once
@@ -40,6 +43,12 @@ extern char  customCityName[32];
 extern float customCityLat;
 extern float customCityLon;
 extern bool  useCustomCity;
+
+// ================================================================
+// RSS フィード URL
+// ================================================================
+#define RSS_URL_MAX 256
+extern char rssUrl[RSS_URL_MAX];
 
 // ================================================================
 // 自分の都市モードで使う値を返すアクセサ
